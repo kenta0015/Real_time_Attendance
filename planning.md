@@ -81,7 +81,20 @@ Push notifications (via Expo Push or OneSignal)
 
 Offline data handling (e.g., queue and resend)
 
-🧪 Development Notes & Recommended Environment
+## 🧪 Development Notes & Recommended Environment
+
+下記のエラーが表示された
+
+❌ Your project uses SDK 50
+✅ Your Expo Go supports SDK 53 only
+
+つまり：
+
+現状 結論
+あなたのアプリ Expo SDK 50（安定構成）
+iPhone の Expo Go SDK 53 以降専用（強制アップデートあり）
+結果 起動不可（Expo Go では）
+
 GPS feature must be tested on a physical device (not possible with ThinkPad alone)
 
 Map + GPS logic works best on Expo Go (not web)
@@ -116,13 +129,21 @@ Prepare iOS build using TestFlight or EAS Build with Apple Developer account
 
 Phase Feature Description Test Method Physical Device Required?
 🟩 Phase 1 Group search, join, and event listing ✅ Fully testable on Web ❌ Not required
+
 🟩 Phase 2.1 /event/[id].tsx – Map display & distance UI ✅ UI testable on Web (limited map support) ❌ Not required (map behavior check on real device recommended)
+
 🟨 Phase 2.2 GPS-based UI (check-in button, comments) 🚫 Not testable on Web → ✅ Requires Android device ✅ Physical device required (Android or iPhone)
+
 🟨 Phase 3.1 Attendance list view (real-time) ✅ Fully testable on Web ❌ Not required (display only)
+
 🟨 Phase 3.2 Active event view (live attendee count, status) ✅ Web + Supabase integration testable ❌ Not required (GPS testing separate)
+
 🟧 Phase 4 Organizer tools (create/edit groups/events) ✅ Fully testable on Web ❌ Not required
+
 🟥 Phase 5.1 Chat feature (Supabase-ready) ✅ Web or Android ❌ Not required
+
 🟥 Phase 5.2 Profile & history screens, stats graph ✅ Fully testable on Web ❌ Not required
+
 🟥 Phase 5.3 Push notifications, offline handling ✅ Android can test fully ⚠️ iOS push requires Apple Developer Program
 
 ## ✅ Summary: Phases That Require a Physical Device
