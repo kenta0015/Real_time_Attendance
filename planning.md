@@ -1,4 +1,4 @@
-✅doesnot mean it is done
+(Note) ✅doesnot mean it is done
 
 # 🧭 Full Roadmap (Organized by Phase)
 
@@ -128,15 +128,31 @@ Prepare iOS build using TestFlight or EAS Build with Apple Developer account
 ## Actual whole plan
 
 Phase Feature Description Test Method Physical Device Required?
+
+🟩 Phase 0: Role Confirmation and Guards (Do First / Small Tasks)
+0.1 Assign Default Role
+If profiles.role is empty for existing users, bulk-assign attendee (SQL is fine).
+
+0.2 Dev-Only Role Toggle
+During development only, allow switching between organizer / attendee via the UI (header or hidden menu).
+
+0.3 Screen Guard
+When directly accessing a Group-related page, redirect attendee users to /events.
+
+0.4 Final RLS Check
+Ensure that access is blocked via Supabase policies, without relying solely on UI-based display control.
+
 🟩 Phase 1 Group search, join, and event listing ✅ Fully testable on Web ❌ Not required
 
 🟩 Phase 2.1 /event/[id].tsx – Map display & distance UI ✅ UI testable on Web (limited map support) ❌ Not required (map behavior check on real device recommended)
+⇒Done!! BUT UI layout and database connectivity only.Location permission enabled and Developer mode on are not finished yet.
 
 🟨 Phase 2.2 GPS-based UI (check-in button, comments) 🚫 Not testable on Web → ✅ Requires Android device ✅ Physical device required (Android or iPhone)
 
 🟨 Phase 3.1 Attendance list view (real-time) ✅ Fully testable on Web ❌ Not required (display only)
-
+⇒Done!!
 🟨 Phase 3.2 Active event view (live attendee count, status) ✅ Web + Supabase integration testable ❌ Not required (GPS testing separate)
+⇒Done!!
 
 🟧 Phase 4 Organizer tools (create/edit groups/events) ✅ Fully testable on Web ❌ Not required
 

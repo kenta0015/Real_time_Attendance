@@ -1,8 +1,15 @@
-// app/(tabs)/events/[id].tsx
 import React, { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ActivityIndicator, Dimensions, Platform } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ActivityIndicator,
+  Dimensions,
+  Platform,
+} from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { supabase } from "../../../lib/supabase";
+import { useUser } from "@supabase/auth-helpers-react";
 
 const { width, height } = Dimensions.get("window");
 const ASPECT_RATIO = width / height;
@@ -12,10 +19,14 @@ const CHECK_IN_RADIUS_METERS = 50;
 
 export default function EventDetailScreen() {
   const { id } = useLocalSearchParams();
+  const user = useUser();
+
   const [event, setEvent] = useState<any>(null);
   const [userLocation, setUserLocation] = useState<any>(null);
   const [distance, setDistance] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+  const [groupMembers, setGroupMembers] = useState<any[]>([]);
+  const [isOrganizer, setIsOrganizer] = useState(false);
 
   const [MapView, setMapView] = useState<any>(null);
   const [Marker, setMarker] = useState<any>(null);
@@ -25,7 +36,6 @@ export default function EventDetailScreen() {
     fetchEvent();
 
     if (Platform.OS !== "web") {
-      // 動的 import
       (async () => {
         const maps = await import("react-native-maps");
         const location = await import("expo-location");
@@ -35,6 +45,12 @@ export default function EventDetailScreen() {
       })();
     }
   }, []);
+
+  useEffect(() => {
+    if (event && user) {
+      fetchGroupMembers(event.group_id);
+    }
+  }, [event, user]);
 
   useEffect(() => {
     if (event && userLocation) {
@@ -58,10 +74,17 @@ export default function EventDetailScreen() {
         }
 
         const location = await Location.getCurrentPositionAsync({});
+        console.log("✅ [userLocation]", location.coords);
         setUserLocation(location.coords);
       })();
     }
   }, [Location]);
+
+  useEffect(() => {
+    console.log("✅ [user?.id]:", user?.id);
+    console.log("✅ [event]:", event);
+    console.log("✅ [groupMembers]:", groupMembers);
+  }, [user, event, groupMembers]);
 
   const fetchEvent = async () => {
     const { data, error } = await supabase
@@ -69,9 +92,30 @@ export default function EventDetailScreen() {
       .select("*")
       .eq("id", id)
       .single();
-    if (error) console.error(error);
+
+    console.log("✅ [fetchEvent] id:", id);
+    console.log("✅ [fetchEvent] event:", data);
+
+    if (error) console.error("❌ [fetchEvent] error:", error);
     else setEvent(data);
+
     setLoading(false);
+  };
+
+  const fetchGroupMembers = async (groupId: string) => {
+    const { data, error } = await supabase
+      .from("group_members")
+      .select("*")
+      .eq("group_id", groupId);
+
+    if (error) {
+      console.error("❌ [fetchGroupMembers] error:", error);
+      return;
+    }
+
+    setGroupMembers(data);
+    const currentMember = data.find((m: any) => m.user_id === user?.id);
+    setIsOrganizer(currentMember?.is_organizer ?? false);
   };
 
   const getDistanceFromLatLonInMeters = (
@@ -134,23 +178,29 @@ export default function EventDetailScreen() {
         />
       </MapView>
 
-      <View style={styles.statusBox}>
-        <Text style={styles.status}>
-          You are {Math.round(distance!)} meters away.
-        </Text>
-        <Text
-          style={[
-            styles.attendance,
-            {
-              color: distance! <= CHECK_IN_RADIUS_METERS ? "green" : "gray",
-            },
-          ]}
-        >
-          {distance! <= CHECK_IN_RADIUS_METERS
-            ? "✅ Attendance Possible"
-            : "⏳ Too far to check-in"}
-        </Text>
-      </View>
+      {isOrganizer ? (
+        <View style={styles.statusBox}>
+          <Text style={styles.status}>👑 Organizer View</Text>
+        </View>
+      ) : (
+        <View style={styles.statusBox}>
+          <Text style={styles.status}>
+            You are {Math.round(distance!)} meters away.
+          </Text>
+          <Text
+            style={[
+              styles.attendance,
+              {
+                color: distance! <= CHECK_IN_RADIUS_METERS ? "green" : "gray",
+              },
+            ]}
+          >
+            {distance! <= CHECK_IN_RADIUS_METERS
+              ? "✅ Attendance Possible"
+              : "⏳ Too far to check-in"}
+          </Text>
+        </View>
+      )}
     </View>
   );
 }

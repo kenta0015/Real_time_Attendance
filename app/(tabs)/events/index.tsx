@@ -1,182 +1,82 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   FlatList,
-  TouchableOpacity,
-  TextInput,
   RefreshControl,
+  TouchableOpacity,
 } from 'react-native';
-import { router } from 'expo-router';
-import { Search, MapPin, Clock, Users } from 'lucide-react-native';
-import { supabase } from '@/lib/supabase';
-import { useAuthStore } from '@/stores/authStore';
+import { MapPin, Clock, Users } from 'lucide-react-native';
 import { format } from 'date-fns';
-
-interface Group {
-  id: string;
-  name: string;
-  description: string | null;
-  category: string;
-  organizer_id: string;
-  created_at: string;
-}
-
-interface Event {
-  id: string;
-  title: string;
-  description: string | null;
-  category: string;
-  start_time: string;
-  end_time: string;
-  location_name: string;
-  latitude: number;
-  longitude: number;
-  group_id: string;
-  groups: {
-    name: string;
-    category: string;
-  };
-}
+import { useAuthStore } from '@/stores/authStore';
+import { supabase } from '@/lib/supabase';
+import { Event, Group } from '@/types';
 
 export default function EventsScreen() {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [events, setEvents] = useState<Event[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'groups' | 'events'>('groups');
-
   const { user } = useAuthStore();
+  const [selectedTab, setSelectedTab] = useState<'events' | 'groups'>('events');
+  const [events, setEvents] = useState<Event[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    try {
-      await Promise.all([loadGroups(), loadEvents()]);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+    if (user?.id) {
+      loadGroupMemberships();
     }
-  };
+  }, [user?.id]);
 
-  const loadGroups = async () => {
-    const { data, error } = await supabase
-      .from('groups')
-      .select('*')
-      .ilike('name', `%${searchQuery}%`)
-      .order('created_at', { ascending: false });
+  const loadGroupMemberships = async () => {
+    if (!user?.id) return;
 
-    if (!error && data) {
-      setGroups(data);
-    }
-  };
+    const { data: groupMemberData, error: groupError } = await supabase
+      .from('group_members')
+      .select('group_id')
+      .eq('user_id', user.id);
 
-  const loadEvents = async () => {
-    if (!user) return;
+    if (groupError || !groupMemberData) return;
 
-    // Get events from groups the user has joined
-    const { data, error } = await supabase
+    const groupIds = groupMemberData.map((gm) => gm.group_id);
+
+    // Fetch Events
+    const { data: eventsData, error: eventsError } = await supabase
       .from('events')
-      .select(`
-        *,
-        groups (
-          name,
-          category
-        )
-      `)
+      .select('*')
       .gte('end_time', new Date().toISOString())
       .order('start_time', { ascending: true });
 
-    if (!error && data) {
-      setEvents(data as Event[]);
+    if (!eventsError && eventsData) {
+      const filteredEvents = eventsData.filter((event) =>
+        groupIds.includes(event.group_id)
+      );
+      setEvents(filteredEvents);
+    }
+
+    // Fetch Groups
+    const { data: groupsData, error: groupFetchError } = await supabase
+      .from('groups')
+      .select('*')
+      .in('id', groupIds);
+
+    if (!groupFetchError && groupsData) {
+      setGroups(groupsData);
     }
   };
 
-  const joinGroup = async (groupId: string) => {
-    if (!user) return;
-
-    const { error } = await supabase
-      .from('group_members')
-      .insert({
-        group_id: groupId,
-        user_id: user.id,
-      });
-
-    if (!error) {
-      loadEvents(); // Refresh events after joining group
-    }
-  };
-
-  const joinEvent = async (eventId: string) => {
-    if (!user) return;
-
-    const { error } = await supabase
-      .from('event_attendees')
-      .insert({
-        event_id: eventId,
-        user_id: user.id,
-        status: 'registered',
-      });
-
-    if (!error) {
-      router.push(`/event/${eventId}`);
-    }
-  };
-
-  const onRefresh = () => {
+  const onRefresh = async () => {
     setRefreshing(true);
-    loadData();
+    await loadGroupMemberships();
+    setRefreshing(false);
   };
 
-  const filteredGroups = groups.filter(group =>
-    group.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    group.category.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const filteredEvents = events.filter(event =>
-    event.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    event.groups.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const renderGroup = ({ item }: { item: Group }) => (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => joinGroup(item.id)}
-    >
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle}>{item.name}</Text>
-        <View style={styles.categoryBadge}>
-          <Text style={styles.categoryText}>{item.category}</Text>
-        </View>
-      </View>
-      {item.description && (
-        <Text style={styles.cardDescription}>{item.description}</Text>
-      )}
-      <View style={styles.cardFooter}>
-        <View style={styles.cardInfo}>
-          <Users size={16} color="#6B7280" />
-          <Text style={styles.cardInfoText}>Tap to join group</Text>
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
-
-  const renderEvent = ({ item }: { item: Event }) => (
-    <TouchableOpacity
-      style={styles.card}
-      onPress={() => joinEvent(item.id)}
-    >
+  const renderEventItem = ({ item }: { item: Event }) => (
+    <View style={styles.card}>
       <View style={styles.cardHeader}>
         <Text style={styles.cardTitle}>{item.title}</Text>
         <View style={styles.categoryBadge}>
           <Text style={styles.categoryText}>{item.category}</Text>
         </View>
       </View>
-      <Text style={styles.groupName}>{item.groups.name}</Text>
       {item.description && (
         <Text style={styles.cardDescription}>{item.description}</Text>
       )}
@@ -192,52 +92,97 @@ export default function EventsScreen() {
           <Text style={styles.cardInfoText}>{item.location_name}</Text>
         </View>
       </View>
-    </TouchableOpacity>
+    </View>
+  );
+
+  const renderGroupItem = ({ item }: { item: Group }) => (
+    <View style={styles.card}>
+      <Text style={styles.cardTitle}>{item.name}</Text>
+      {item.description && (
+        <Text style={styles.cardDescription}>{item.description}</Text>
+      )}
+      <View style={styles.cardFooter}>
+        <View style={styles.cardInfo}>
+          <Users size={16} color="#6B7280" />
+          <Text style={styles.cardInfoText}>{item.category}</Text>
+        </View>
+      </View>
+    </View>
+  );
+
+  const renderTabButtons = () => (
+    <View style={styles.tabButtons}>
+      <TouchableOpacity
+        style={[
+          styles.tabButton,
+          selectedTab === 'groups' && styles.tabButtonActive,
+        ]}
+        onPress={() => setSelectedTab('groups')}
+      >
+        <Text
+          style={[
+            styles.tabButtonText,
+            selectedTab === 'groups' && styles.tabButtonTextActive,
+          ]}
+        >
+          Groups
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={[
+          styles.tabButton,
+          selectedTab === 'events' && styles.tabButtonActive,
+        ]}
+        onPress={() => setSelectedTab('events')}
+      >
+        <Text
+          style={[
+            styles.tabButtonText,
+            selectedTab === 'events' && styles.tabButtonTextActive,
+          ]}
+        >
+          Events
+        </Text>
+      </TouchableOpacity>
+    </View>
   );
 
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Discover</Text>
-        <View style={styles.searchContainer}>
-          <Search size={20} color="#6B7280" style={styles.searchIcon} />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search groups and events..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-          />
-        </View>
-        <View style={styles.tabContainer}>
-          <TouchableOpacity
-            style={[styles.tab, activeTab === 'groups' && styles.activeTab]}
-            onPress={() => setActiveTab('groups')}
-          >
-            <Text style={[styles.tabText, activeTab === 'groups' && styles.activeTabText]}>
-              Groups
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tab, activeTab === 'events' && styles.activeTab]}
-            onPress={() => setActiveTab('events')}
-          >
-            <Text style={[styles.tabText, activeTab === 'events' && styles.activeTabText]}>
-              My Events
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+      <Text style={styles.title}>📅 My Events</Text>
+      {renderTabButtons()}
 
-      <FlatList
-        data={activeTab === 'groups' ? filteredGroups : filteredEvents}
-        renderItem={activeTab === 'groups' ? renderGroup : renderEvent}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.listContainer}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
-        showsVerticalScrollIndicator={false}
-      />
+      {selectedTab === 'events' ? (
+        <FlatList
+          data={events}
+          keyExtractor={(item) => item.id}
+          renderItem={renderEventItem}
+          contentContainerStyle={styles.listContainer}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>
+              No events found for your groups.
+            </Text>
+          }
+          showsVerticalScrollIndicator={false}
+        />
+      ) : (
+        <FlatList
+          data={groups}
+          keyExtractor={(item) => item.id}
+          renderItem={renderGroupItem}
+          contentContainerStyle={styles.listContainer}
+          refreshControl={
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+          }
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No groups found.</Text>
+          }
+          showsVerticalScrollIndicator={false}
+        />
+      )}
     </View>
   );
 }
@@ -246,63 +191,42 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F9FAFB',
-  },
-  header: {
-    backgroundColor: '#FFFFFF',
     paddingTop: 60,
     paddingHorizontal: 24,
-    paddingBottom: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
   },
   title: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: 'bold',
     color: '#111827',
     marginBottom: 16,
   },
-  searchContainer: {
+  tabButtons: {
     flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
     marginBottom: 16,
-  },
-  searchIcon: {
-    marginRight: 12,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    color: '#111827',
-  },
-  tabContainer: {
-    flexDirection: 'row',
-    backgroundColor: '#F3F4F6',
-    borderRadius: 12,
-    padding: 4,
-  },
-  tab: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
     borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
   },
-  activeTab: {
+  tabButton: {
+    flex: 1,
+    paddingVertical: 12,
     backgroundColor: '#FFFFFF',
+    alignItems: 'center',
   },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '600',
+  tabButtonActive: {
+    backgroundColor: '#EEF2FF',
+  },
+  tabButtonText: {
+    fontSize: 16,
     color: '#6B7280',
+    fontWeight: '600',
   },
-  activeTabText: {
+  tabButtonTextActive: {
     color: '#4F46E5',
   },
   listContainer: {
-    padding: 24,
+    paddingBottom: 24,
   },
   card: {
     backgroundColor: '#FFFFFF',
@@ -310,10 +234,7 @@ const styles = StyleSheet.create({
     padding: 20,
     marginBottom: 16,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 3.84,
     elevation: 5,
@@ -330,12 +251,6 @@ const styles = StyleSheet.create({
     color: '#111827',
     flex: 1,
     marginRight: 12,
-  },
-  groupName: {
-    fontSize: 14,
-    color: '#4F46E5',
-    fontWeight: '600',
-    marginBottom: 8,
   },
   categoryBadge: {
     backgroundColor: '#EEF2FF',
@@ -365,5 +280,11 @@ const styles = StyleSheet.create({
   cardInfoText: {
     fontSize: 14,
     color: '#6B7280',
+  },
+  emptyText: {
+    color: '#6B7280',
+    textAlign: 'center',
+    marginTop: 40,
+    fontSize: 16,
   },
 });

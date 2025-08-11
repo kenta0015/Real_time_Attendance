@@ -1,6 +1,12 @@
 // app/(tabs)/organize/attendance-list.tsx
 import React, { useEffect, useState } from "react";
-import { View, Text, FlatList, StyleSheet, ActivityIndicator } from "react-native";
+import {
+  View,
+  Text,
+  FlatList,
+  StyleSheet,
+  ActivityIndicator,
+} from "react-native";
 import { supabase } from "../../../lib/supabase"; // adjust path if needed
 
 interface AttendanceLog {
@@ -26,6 +32,9 @@ export default function AttendanceListScreen() {
       .select("*")
       .order("timestamp", { ascending: false });
 
+    console.log("📦 attendance_logs data:", data);
+    console.log("⚠️ attendance_logs error:", error);
+
     if (error) {
       console.error("Error fetching attendance logs:", error);
     } else {
@@ -42,7 +51,7 @@ export default function AttendanceListScreen() {
       </Text>
       {item.comment && <Text style={styles.comment}>💬 {item.comment}</Text>}
       <Text style={styles.timestamp}>
-        🕒 {new Date(item.timestamp).toLocaleTimeString()}
+        🕒 {new Date(item.timestamp).toLocaleString()}
       </Text>
     </View>
   );
@@ -58,12 +67,16 @@ export default function AttendanceListScreen() {
   return (
     <View style={styles.container}>
       <Text style={styles.header}>Attendance Log</Text>
-      <FlatList
-        data={logs}
-        keyExtractor={(item) => item.id.toString()}
-        renderItem={renderItem}
-        contentContainerStyle={{ paddingBottom: 20 }}
-      />
+      {logs.length === 0 ? (
+        <Text style={styles.emptyText}>No attendance logs found.</Text>
+      ) : (
+        <FlatList
+          data={logs}
+          keyExtractor={(item) => item.id.toString()}
+          renderItem={renderItem}
+          contentContainerStyle={{ paddingBottom: 20 }}
+        />
+      )}
     </View>
   );
 }
@@ -81,4 +94,5 @@ const styles = StyleSheet.create({
   name: { fontSize: 16, fontWeight: "bold" },
   comment: { fontSize: 14, fontStyle: "italic", marginTop: 4 },
   timestamp: { fontSize: 12, color: "#777", marginTop: 4 },
+  emptyText: { textAlign: "center", marginTop: 20, color: "#666" },
 });
