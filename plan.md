@@ -272,3 +272,29 @@ _env/
 - Check‑in succeeds within configured radius/window.
 - Organizer screen live‑updates without manual refresh.
 - No native builds required; all flows run in Expo Go.
+
+## 8) Guest ID – Production Considerations
+
+Currently, the app uses a simple UUID generator (`Math.random()`-based) stored in AsyncStorage.  
+This is fine for development, but before production we should improve reliability and security.
+
+**Future improvements to consider:**
+
+1. **Switch to `crypto.getRandomValues` for UUID generation**
+
+   - Reason: `Math.random()` is not cryptographically strong. Using `crypto.getRandomValues` ensures truly unique and secure IDs.
+
+2. **Implement guest → user migration**
+
+   - Reason: When adding login/authentication, we need a way to transfer existing guest data (events, logs, etc.) to the authenticated user account, so users don’t lose history.
+
+3. **Add a "Reset Guest ID" option in settings**
+   - Reason: Useful for testing, troubleshooting, or if multiple people share one device. It allows creating a fresh guest profile without reinstalling the app.
+
+## Strategy to differentiate History from Organize
+
+- **Copy**: "History of this device's check-ins (and creations if Organizer)."
+- **Actions**: add note, export (CSV/PDF), share proof, quick re-check-in/comment.
+- **Signals**: check-in timestamp, GPS accuracy (±m), streaks/counters.
+- **Filters**: Created vs Checked-in, group, date range (Today / 7d / 30d).
+- **Future**: with login, migrate `guest_id -> user_id` for multi-device history; optionally include RSVP/bookmarks so upcoming items appear before check-in.

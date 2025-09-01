@@ -1,5 +1,17 @@
+import { AttendeeOnly } from "../../../../components/roleGates";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Button, TextInput, Alert, Platform, ScrollView } from "react-native";
+import {
+  View,
+  Text,
+  StyleSheet,
+  Button,
+  TextInput,
+  Alert,
+  Platform,
+  ScrollView,
+  ToastAndroid,
+  Keyboard,
+} from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import * as Location from "expo-location";
 import { supabase } from "../../../../lib/supabase";
@@ -26,18 +38,26 @@ export default function EventDetail() {
   const [guestId, setGuestId] = useState("");
   const [permission, setPermission] = useState<Location.PermissionStatus | null>(null);
   const [coords, setCoords] = useState<{ lat: number | null; lng: number | null; acc: number | null }>({
-    lat: null, lng: null, acc: null,
+    lat: null,
+    lng: null,
+    acc: null,
   });
   const [error, setError] = useState<string | null>(null);
   const [comment, setComment] = useState("");
   const [isWatching, setIsWatching] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [flash, setFlash] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const watcher = useRef<Location.LocationSubscription | null>(null);
 
   useEffect(() => {
     (async () => {
-      const gid = await getGuestId(); setGuestId(gid);
+      const gid = await getGuestId();
+      setGuestId(gid);
 
-      if (!id) { setError("Invalid event id."); return; }
+      if (!id) {
+        setError("Invalid event id.");
+        return;
+      }
 
       const { data, error } = await supabase
         .from("events")
@@ -52,7 +72,9 @@ export default function EventDetail() {
       setPermission(p.status);
     })();
 
-    return () => { stopWatch(); };
+    return () => {
+      stopWatch();
+    };
   }, [id]);
 
   const startWatch = async () => {
@@ -121,23 +143,50 @@ export default function EventDetail() {
 
   const accLimit = event ? accuracyThreshold(event.radius_m) : 50;
 
+  const showSuccess = (msg: string) => {
+    setFlash({ type: "success", msg });
+    if (Platform.OS === "android") {
+      try {
+        ToastAndroid.show(msg, ToastAndroid.SHORT);
+      } catch {}
+    }
+    setTimeout(() => setFlash(null), 1500);
+  };
+  const showError = (msg: string) => {
+    setFlash({ type: "error", msg });
+    setTimeout(() => setFlash(null), 2500);
+    if (Platform.OS !== "android") {
+      Alert.alert("Error", msg);
+    }
+  };
+
   const tryCheckIn = async () => {
-    if (!event) return;
+    if (!event || submitting) return;
     if (!eligible) {
-      Alert.alert("Not eligible", "Within time/radius/accuracy to check in.");
+      showError("Not eligible. Be within time/radius/accuracy.");
       return;
     }
-    const { error } = await supabase.from("attendance").upsert({
-      event_id: event.id,
-      user_id: guestId,
-      checked_in_at_utc: new Date().toISOString(),
-      lat: coords.lat,
-      lng: coords.lng,
-      accuracy_m: coords.acc,
-      comment: comment.trim() ? comment.trim() : null,
-    });
-    if (error) { Alert.alert("Error", error.message); return; }
-    Alert.alert("Success", "Checked in.");
+    setSubmitting(true);
+    Keyboard.dismiss();
+    try {
+      const { error } = await supabase.from("attendance").upsert({
+        event_id: event.id,
+        user_id: guestId,
+        checked_in_at_utc: new Date().toISOString(),
+        lat: coords.lat,
+        lng: coords.lng,
+        accuracy_m: coords.acc,
+        comment: comment.trim() ? comment.trim() : null,
+      });
+      if (error) throw error;
+
+      setComment("");
+      showSuccess("Checked in!");
+    } catch (e: any) {
+      showError(e?.message ?? "Failed to check in.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (!id) {
@@ -166,16 +215,16 @@ export default function EventDetail() {
       <Text style={styles.caption}>
         Venue: {event.location_name ?? "(no name)"} (lat {event.lat}, lng {event.lng})
       </Text>
-      <Text style={styles.caption}>
-        Radius {event.radius_m} m · Window ±{event.window_minutes} min
-      </Text>
+      <Text style={styles.caption}>Radius {event.radius_m} m · Window ±{event.window_minutes} min</Text>
 
       <View style={styles.card}>
         <Text style={styles.h2}>Your location</Text>
         <Text>Permission: {permission ?? "…"}</Text>
         <Text>Lat: {coords.lat != null ? coords.lat.toFixed(6) : "—"}</Text>
         <Text>Lng: {coords.lng != null ? coords.lng.toFixed(6) : "—"}</Text>
-        <Text>Accuracy: {coords.acc != null ? Math.round(coords.acc) : "—"} m (≤ {accLimit} m)</Text>
+        <Text>
+          Accuracy: {coords.acc != null ? Math.round(coords.acc) : "—"} m (≤ {accLimit} m)
+        </Text>
         <Text>Distance: {distanceM != null ? `${distanceM} m` : "—"}</Text>
         {error ? <Text style={styles.error}>{error}</Text> : null}
         <View style={{ flexDirection: "row", gap: 12, marginTop: 8 }}>
@@ -203,8 +252,15 @@ export default function EventDetail() {
           value={comment}
           onChangeText={(t) => setComment(t.slice(0, 150))}
         />
-        <Button title="Check in" onPress={tryCheckIn} disabled={!eligible} />
+        <Button title={submitting ? "Checking in…" : "Check in"} onPress={tryCheckIn} disabled={!eligible || submitting} />
       </View>
+
+      {/* inline flash */}
+      {flash ? (
+        <View style={[styles.flash, flash.type === "success" ? styles.flashOk : styles.flashErr]}>
+          <Text style={styles.flashText}>{flash.msg}</Text>
+        </View>
+      ) : null}
 
       <View style={{ height: 120 }} />
     </ScrollView>
@@ -217,7 +273,33 @@ const styles = StyleSheet.create({
   caption: { color: "#666" },
   h2: { fontSize: 18, fontWeight: "600", marginBottom: 6 },
   small: { color: "#666", fontSize: 12 },
-  card: { backgroundColor: "#fafafa", borderColor: "#e5e5e5", borderWidth: 1, borderRadius: 12, padding: 12, gap: 6 },
-  input: { borderWidth: 1, borderColor: "#ddd", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8, backgroundColor: "#fff" },
+  card: {
+    backgroundColor: "#fafafa",
+    borderColor: "#e5e5e5",
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: "#ddd",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "#fff",
+  },
   error: { color: "#b00020" },
+  flash: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 24,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  flashOk: { backgroundColor: "#16a34a" },
+  flashErr: { backgroundColor: "#b91c1c" },
+  flashText: { color: "#fff", fontWeight: "800" },
 });

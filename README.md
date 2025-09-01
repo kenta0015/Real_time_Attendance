@@ -78,3 +78,70 @@ Using `watchPositionAsync` or `startLocationUpdatesAsync` continuously leads to 
 - Use **intermittent location checks** instead of constant tracking.
 - Trigger GPS updates only when the screen is focused.
 - Carefully evaluate optional background tracking before implementation.
+
+# Organize vs History — quick spec
+
+## Concepts
+
+- `guest_id`: device-local anonymous ID. DEV ROLE (Organizer/Attendee) flips UI/permissions only; it does not change `guest_id`.
+- Different devices/contexts (web vs. Android, incognito, cleared app data) mean different `guest_id`s.
+
+---
+
+## Organize tab
+
+### Organizer
+
+- Create/Edit events.
+- View group schedule: Past / Active / Upcoming.
+- Open Detail and Live (Organizer).
+- Maps: web uses embedded preview; mobile opens Google Maps.
+- Data ties: new events stamped with `created_by = this device's guest_id`. Listing itself does not require attendance.
+
+### Attendee
+
+- Browse-only: Past / Active / Upcoming, open Detail. No Create, no Live.
+- Maps: same preview/launch behavior.
+- Data ties: listing does not depend on your `guest_id`.
+
+---
+
+## History tab
+
+### Organizer
+
+- Shows events **created on this device** (`created_by == guest_id`) **plus** events **checked in by this device** (`attendance.user_id == guest_id`).
+- Buckets: ACTIVE / UPCOMING / PAST (up to 20). Map preview/launch available.
+- Pull-to-refresh, empty states, error banner.
+
+### Attendee
+
+- Shows **only** events **checked in by this device** (`attendance.user_id == guest_id`).
+- Same buckets/UX as above; organizer-only actions are hidden.
+
+> History is the device's personal log. If you did not check in (or RSVP in future), it will not appear here even if it exists in Organize.
+
+---
+
+## `guest_id` behavior
+
+- Same device: checking in as Organizer writes to the same `guest_id`; switching to Attendee still shows that check-in in History.
+- Different devices: different `guest_id`s, independent histories.
+- Verify each `guest_id` in Profile during tests.
+
+---
+
+## Why keep both?
+
+- **Organize**: "What is on the group schedule?"
+- **History**: "What did I (this device) attend or create?"
+
+---
+
+## Strategy to differentiate History from Organize
+
+- **Copy**: "History of this device's check-ins (and creations if Organizer)."
+- **Actions**: add note, export (CSV/PDF), share proof, quick re-check-in/comment.
+- **Signals**: check-in timestamp, GPS accuracy (±m), streaks/counters.
+- **Filters**: Created vs Checked-in, group, date range (Today / 7d / 30d).
+- **Future**: with login, migrate `guest_id -> user_id` for multi-device history; optionally include RSVP/bookmarks so upcoming items appear before check-in.
