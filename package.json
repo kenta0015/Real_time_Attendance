@@ -24,7 +24,8 @@
     "react-native-url-polyfill": "^2.0.0",
     "zustand": "^5.0.8",
     "react-dom": "19.0.0",
-    "react-native-web": "^0.20.0"
+    "react-native-web": "^0.20.0",
+    "expo-battery": "~9.1.4"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",

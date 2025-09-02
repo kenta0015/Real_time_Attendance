@@ -11,16 +11,18 @@ import {
   ScrollView,
   ToastAndroid,
   Keyboard,
+  Linking,
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import * as Location from "expo-location";
+import * as Battery from "expo-battery";
 import { supabase } from "../../../../lib/supabase";
 import { getGuestId } from "../../../../stores/session";
 import { haversineMeters, isWithinWindow, accuracyThreshold } from "../../../../lib/geo";
 
 type EventRow = {
   id: string;
-  title: string;
+  title: string | null;
   start_utc: string;
   end_utc: string;
   lat: number;
@@ -30,68 +32,114 @@ type EventRow = {
   location_name: string | null;
 };
 
-export default function EventDetail() {
-  const params = useLocalSearchParams();
-  const id = typeof params.id === "string" ? params.id : undefined;
+type Coords = { lat: number | null; lng: number | null; acc: number | null };
 
+export default function EventDetailScreen() {
+  const { id } = useLocalSearchParams<{ id?: string }>();
   const [event, setEvent] = useState<EventRow | null>(null);
-  const [guestId, setGuestId] = useState("");
-  const [permission, setPermission] = useState<Location.PermissionStatus | null>(null);
-  const [coords, setCoords] = useState<{ lat: number | null; lng: number | null; acc: number | null }>({
-    lat: null,
-    lng: null,
-    acc: null,
-  });
   const [error, setError] = useState<string | null>(null);
-  const [comment, setComment] = useState("");
-  const [isWatching, setIsWatching] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [flash, setFlash] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+  const [coords, setCoords] = useState<Coords>({ lat: null, lng: null, acc: null });
   const watcher = useRef<Location.LocationSubscription | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [comment, setComment] = useState("");
+  const [guestId, setGuestId] = useState<string | null>(null);
+
+  const [preciseAllowed, setPreciseAllowed] = useState<boolean>(true);
+  const [batteryPct, setBatteryPct] = useState<number | null>(null);
+  const [reqElapsedMs, setReqElapsedMs] = useState<number | null>(null);
+  const [lastMocked, setLastMocked] = useState<boolean | null>(null);
+
+  const showError = (msg: string) => {
+    if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
+    else Alert.alert("Error", msg);
+  };
+  const showSuccess = (msg: string) => {
+    if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
+    else Alert.alert("Success", msg);
+  };
+
+  const loadEvent = async () => {
+    if (!id) return;
+    setError(null);
+    const { data, error } = await supabase
+      .from("events")
+      .select("id, title, start_utc, end_utc, lat, lng, radius_m, window_minutes, location_name")
+      .eq("id", id)
+      .maybeSingle();
+    if (error) {
+      setError(error.message);
+      return;
+    }
+    if (data) setEvent(data as unknown as EventRow);
+  };
+
+  const readGuest = async () => {
+    const gid = await getGuestId();
+    setGuestId(gid);
+  };
+
+  const checkPrecise = async () => {
+    try {
+      if (Platform.OS === "ios" && (Location as any).getAccuracyAuthorizationAsync) {
+        // iOS 14+: Full / Reduced
+        // @ts-ignore
+        const acc = await Location.getAccuracyAuthorizationAsync();
+        const ok =
+          acc === (Location as any).AccuracyAuthorization?.FullAccuracy || acc === "full";
+        setPreciseAllowed(!!ok);
+        return !!ok;
+      }
+      // Android or API not available -> treat as precise OK
+      setPreciseAllowed(true);
+      return true;
+    } catch {
+      setPreciseAllowed(true);
+      return true;
+    }
+  };
 
   useEffect(() => {
     (async () => {
-      const gid = await getGuestId();
-      setGuestId(gid);
-
-      if (!id) {
-        setError("Invalid event id.");
-        return;
-      }
-
-      const { data, error } = await supabase
-        .from("events")
-        .select("id,title,start_utc,end_utc,lat,lng,radius_m,window_minutes,location_name")
-        .eq("id", id)
-        .single();
-
-      if (error) setError(error.message);
-      else setEvent(data as EventRow);
-
-      const p = await Location.getForegroundPermissionsAsync();
-      setPermission(p.status);
+      try {
+        if ((Battery as any).getBatteryLevelAsync) {
+          const lvl = await Battery.getBatteryLevelAsync();
+          setBatteryPct(Math.round(((lvl ?? 0) as number) * 100));
+        }
+      } catch {}
+      await checkPrecise();
     })();
+  }, []);
 
-    return () => {
-      stopWatch();
-    };
+  useEffect(() => {
+    loadEvent();
+    readGuest();
   }, [id]);
+
+  const getCurrentPermission = async () => {
+    const p = await Location.getForegroundPermissionsAsync();
+    return p.status;
+  };
+  const requestPermission = async () => {
+    const p = await Location.requestForegroundPermissionsAsync();
+    return p.status;
+  };
 
   const startWatch = async () => {
     try {
-      setError(null);
-      if (isWatching || watcher.current) return;
+      if (watcher.current) return;
 
-      let status = (await Location.getForegroundPermissionsAsync()).status;
-      setPermission(status);
-      if (status !== Location.PermissionStatus.GRANTED) {
-        status = (await Location.requestForegroundPermissionsAsync()).status;
-        setPermission(status);
-        if (status !== Location.PermissionStatus.GRANTED) {
+      Keyboard.dismiss();
+
+      let current = await getCurrentPermission();
+      if (current !== Location.PermissionStatus.GRANTED) {
+        current = await requestPermission();
+        if (current !== Location.PermissionStatus.GRANTED) {
           setError("Location permission not granted.");
           return;
         }
       }
+
+      await checkPrecise();
 
       if (Platform.OS === "android") {
         const enabled = await Location.hasServicesEnabledAsync();
@@ -101,10 +149,16 @@ export default function EventDetail() {
         }
       }
 
+      const __t0 = Date.now();
       watcher.current = await Location.watchPositionAsync(
-        { accuracy: Location.Accuracy.Balanced, timeInterval: 2000, distanceInterval: 1 },
+        {
+          accuracy: Location.Accuracy.Balanced, // battery-friendly; we do a one-shot High before check-in
+          timeInterval: 5000,
+          mayShowUserSettingsDialog: true,
+        },
         (pos) => {
-          if (!isWatching && watcher.current === null) return;
+          setReqElapsedMs(Date.now() - __t0);
+          setLastMocked((pos as any)?.mocked ?? null);
           setCoords({
             lat: pos.coords.latitude ?? null,
             lng: pos.coords.longitude ?? null,
@@ -112,15 +166,13 @@ export default function EventDetail() {
           });
         }
       );
-      setIsWatching(true);
     } catch (e: any) {
-      setError(e?.message ?? "Failed to start GPS.");
+      setError(e?.message ?? "Failed to start watcher.");
     }
   };
 
   const stopWatch = () => {
     try {
-      setIsWatching(false);
       if (watcher.current) {
         watcher.current.remove();
         watcher.current = null;
@@ -128,55 +180,106 @@ export default function EventDetail() {
     } catch {}
   };
 
+  useEffect(() => {
+    startWatch();
+    return () => stopWatch();
+  }, []);
+
+  // shared eligibility check
+  const computeEligible = (c: Coords) => {
+    if (!event || c.lat == null || c.lng == null) return false;
+    const withinWindow = isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes);
+    if (!withinWindow) return false;
+    const dist = haversineMeters(c.lat, c.lng, event.lat, event.lng);
+    const withinRadius = dist <= event.radius_m;
+    const accGate =
+      Platform.OS === "web" ? true : c.acc != null && c.acc <= accuracyThreshold(event.radius_m ?? 50);
+    return withinWindow && withinRadius && accGate;
+  };
+
+  const eligible = useMemo(() => computeEligible(coords), [coords, event]);
+
   const distanceM = useMemo(() => {
     if (!event || coords.lat == null || coords.lng == null) return null;
     return haversineMeters(coords.lat, coords.lng, event.lat, event.lng);
   }, [coords, event]);
 
-  const eligible = useMemo(() => {
-    if (!event) return false;
-    const withinWindow = isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes);
-    const withinRadius = distanceM != null && distanceM <= event.radius_m;
-    const accOk = coords.acc != null && coords.acc <= accuracyThreshold(event.radius_m);
-    return !!(withinWindow && withinRadius && accOk);
-  }, [event, distanceM, coords]);
-
-  const accLimit = event ? accuracyThreshold(event.radius_m) : 50;
-
-  const showSuccess = (msg: string) => {
-    setFlash({ type: "success", msg });
-    if (Platform.OS === "android") {
-      try {
-        ToastAndroid.show(msg, ToastAndroid.SHORT);
-      } catch {}
+  // One-shot high-accuracy fix
+  const acquireHighAcc = async () => {
+    try {
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+        mayShowUserSettingsDialog: true,
+      });
+      const fresh: Coords = {
+        lat: pos.coords.latitude ?? null,
+        lng: pos.coords.longitude ?? null,
+        acc: pos.coords.accuracy ?? null,
+      };
+      setCoords(fresh);
+      return fresh;
+    } catch (e: any) {
+      showError(e?.message ?? "Failed to get high-accuracy fix.");
+      return null;
     }
-    setTimeout(() => setFlash(null), 1500);
   };
-  const showError = (msg: string) => {
-    setFlash({ type: "error", msg });
-    setTimeout(() => setFlash(null), 2500);
-    if (Platform.OS !== "android") {
-      Alert.alert("Error", msg);
+
+  const manualRefresh = async () => {
+    const c = await acquireHighAcc();
+    if (!c) return;
+    const dist =
+      c.lat != null && c.lng != null && event ? haversineMeters(c.lat, c.lng, event.lat, event.lng) : null;
+    if (dist != null) {
+      if (dist <= (event?.radius_m ?? 0)) showSuccess("High-accuracy fix acquired (inside radius).");
+      else showError(`High-accuracy fix acquired, still out of radius (~${Math.round(dist)} m).`);
     }
   };
 
   const tryCheckIn = async () => {
-    if (!event || submitting) return;
-    if (!eligible) {
-      showError("Not eligible. Be within time/radius/accuracy.");
-      return;
-    }
-    setSubmitting(true);
-    Keyboard.dismiss();
     try {
+      if (!guestId || !event) return;
+
+      // If not eligible, try a high-accuracy one-shot and re-check
+      let current = coords;
+      if (!computeEligible(current)) {
+        const fresh = await acquireHighAcc();
+        if (!fresh) return;
+        current = fresh;
+        if (!computeEligible(current)) {
+          const dist =
+            current.lat != null && current.lng != null
+              ? haversineMeters(current.lat, current.lng, event.lat, event.lng)
+              : null;
+          const thr = accuracyThreshold(event.radius_m ?? 50);
+          if (!isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes)) {
+            showError("Outside event time window.");
+          } else if (dist != null && dist > event.radius_m) {
+            showError(`Out of radius (${Math.round(dist)} m > ${event.radius_m} m). Try moving outdoors.`);
+          } else if (current.acc != null && current.acc > thr) {
+            showError(`Low accuracy (±${Math.round(current.acc)} m > ${thr} m). Try sky view / wait a moment.`);
+          } else if (!preciseAllowed) {
+            showError("Precise Location is OFF. Please enable it in Settings.");
+          } else {
+            showError("Not eligible to check in yet.");
+          }
+          return;
+        }
+      }
+
+      if (!preciseAllowed) {
+        showError("Precise Location is OFF. Please enable it in Settings.");
+        return;
+      }
+
+      setSubmitting(true);
       const { error } = await supabase.from("attendance").upsert({
         event_id: event.id,
         user_id: guestId,
         checked_in_at_utc: new Date().toISOString(),
-        lat: coords.lat,
-        lng: coords.lng,
-        accuracy_m: coords.acc,
-        comment: comment.trim() ? comment.trim() : null,
+        lat: current.lat,
+        lng: current.lng,
+        accuracy_m: current.acc,
+        comment: comment.trim() ? comment.trim() : (lastMocked ? "[mocked]" : null),
       });
       if (error) throw error;
 
@@ -213,93 +316,137 @@ export default function EventDetail() {
         {new Date(event.start_utc).toLocaleString()} — {new Date(event.end_utc).toLocaleString()}
       </Text>
       <Text style={styles.caption}>
-        Venue: {event.location_name ?? "(no name)"} (lat {event.lat}, lng {event.lng})
+        Venue: {event.location_name || "—"} / Radius: {event.radius_m} m / Window: ±
+        {event.window_minutes} min
       </Text>
-      <Text style={styles.caption}>Radius {event.radius_m} m · Window ±{event.window_minutes} min</Text>
 
-      <View style={styles.card}>
-        <Text style={styles.h2}>Your location</Text>
-        <Text>Permission: {permission ?? "…"}</Text>
-        <Text>Lat: {coords.lat != null ? coords.lat.toFixed(6) : "—"}</Text>
-        <Text>Lng: {coords.lng != null ? coords.lng.toFixed(6) : "—"}</Text>
-        <Text>
-          Accuracy: {coords.acc != null ? Math.round(coords.acc) : "—"} m (≤ {accLimit} m)
-        </Text>
-        <Text>Distance: {distanceM != null ? `${distanceM} m` : "—"}</Text>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        <View style={{ flexDirection: "row", gap: 12, marginTop: 8 }}>
-          <Button title="Start GPS" onPress={startWatch} disabled={isWatching} />
-          <Button title="Stop GPS" onPress={stopWatch} disabled={!isWatching} />
-        </View>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.h2}>Eligibility</Text>
-        <Text>{eligible ? "✅ Eligible to check in" : "⛔ Not eligible"}</Text>
-        <Text style={styles.small}>Must be inside radius, within time window, and accuracy ≤ limit.</Text>
-      </View>
-
-      <View style={styles.card}>
-        <Text style={styles.h2}>Comment (optional, ≤150)</Text>
-        <View style={{ flexDirection: "row", gap: 8, marginBottom: 8 }}>
-          <Button title="Here now" onPress={() => setComment("Here now")} />
-          <Button title="Arriving in 5 min" onPress={() => setComment("Arriving in 5 min")} />
-          <Button title="Running late" onPress={() => setComment("Running late")} />
-        </View>
-        <TextInput
-          style={styles.input}
-          placeholder="Write a short note…"
-          value={comment}
-          onChangeText={(t) => setComment(t.slice(0, 150))}
-        />
-        <Button title={submitting ? "Checking in…" : "Check in"} onPress={tryCheckIn} disabled={!eligible || submitting} />
-      </View>
-
-      {/* inline flash */}
-      {flash ? (
-        <View style={[styles.flash, flash.type === "success" ? styles.flashOk : styles.flashErr]}>
-          <Text style={styles.flashText}>{flash.msg}</Text>
+      {!preciseAllowed ? (
+        <View style={styles.alertBox}>
+          <Text style={styles.alertText}>Precise Location is OFF. Enable it to check in.</Text>
+          <Button title="Open Settings" onPress={() => Linking.openSettings()} />
         </View>
       ) : null}
 
-      <View style={{ height: 120 }} />
+      {__DEV__ ? (
+        <View style={styles.debugBox}>
+          <Text style={styles.debugText}>
+            acc(m): {coords.acc ?? "—"} | req(ms): {reqElapsedMs ?? "—"} | battery(%):{" "}
+            {batteryPct ?? "—"} | mocked: {String(lastMocked)}
+          </Text>
+          <View style={{ marginTop: 6 }}>
+            <Button title="Refresh GPS (High acc)" onPress={manualRefresh} />
+          </View>
+        </View>
+      ) : null}
+
+      <View style={styles.block}>
+        <Text style={styles.section}>Your position</Text>
+        <Text style={styles.kv}>
+          Lat/Lng: {coords.lat ?? "—"} , {coords.lng ?? "—"} (±{coords.acc ?? "—"} m)
+        </Text>
+        <Text style={styles.kv}>Distance to venue: {distanceM == null ? "—" : `${distanceM} m`}</Text>
+        <Text style={[styles.badge, eligible ? styles.ok : styles.ng]}>
+          {eligible ? "In-range" : "Not ready"}
+        </Text>
+        {!eligible ? (
+          <Text style={styles.reason}>
+            {(() => {
+              if (!isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes))
+                return "Outside event time window";
+              const dist = distanceM == null ? null : distanceM;
+              if (dist != null && event && dist > event.radius_m)
+                return `Out of radius (${Math.round(dist)}m > ${event.radius_m}m)`;
+              if (Platform.OS !== "web" && coords.acc != null && event) {
+                const thr = accuracyThreshold(event.radius_m ?? 50);
+                if (coords.acc > thr) return `Low accuracy (±${Math.round(coords.acc)}m > ${thr}m)`;
+              }
+              if (!preciseAllowed) return "Precise location is OFF";
+              return "Not eligible yet";
+            })()}
+          </Text>
+        ) : null}
+      </View>
+
+      <View style={styles.block}>
+        <Text style={styles.section}>Comment (optional)</Text>
+        <TextInput
+          value={comment}
+          onChangeText={setComment}
+          placeholder='e.g. "Here now"'
+          maxLength={150}
+          style={styles.input}
+        />
+      </View>
+
+      <AttendeeOnly>
+        <Button
+          title={submitting ? "Checking in…" : "Check in"}
+          onPress={tryCheckIn}
+          disabled={!preciseAllowed || submitting}
+        />
+      </AttendeeOnly>
+
+      <View style={{ height: 20 }} />
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { padding: 16, gap: 12, backgroundColor: "#fff" },
-  title: { fontSize: 22, fontWeight: "700" },
-  caption: { color: "#666" },
-  h2: { fontSize: 18, fontWeight: "600", marginBottom: 6 },
-  small: { color: "#666", fontSize: 12 },
-  card: {
-    backgroundColor: "#fafafa",
-    borderColor: "#e5e5e5",
+  alertBox: {
+    backgroundColor: "#FFF7ED",
+    borderColor: "#FDBA74",
     borderWidth: 1,
-    borderRadius: 12,
     padding: 12,
-    gap: 6,
+    borderRadius: 10,
+    marginTop: 8,
+    gap: 8,
   },
-  input: {
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+  alertText: { color: "#9A3412", fontWeight: "600" },
+  debugBox: { backgroundColor: "#111827", padding: 8, borderRadius: 8, marginTop: 8 },
+  debugText: { color: "white", fontSize: 12 },
+
+  container: { flexGrow: 1, padding: 16, gap: 12, backgroundColor: "#fff" },
+  title: { fontSize: 20, fontWeight: "800" },
+  caption: { color: "#555" },
+  block: {
     backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 12,
+    padding: 14,
+    gap: 8,
   },
-  error: { color: "#b00020" },
+  section: { fontWeight: "800", fontSize: 16 },
+  kv: { color: "#333" },
+  reason: { marginTop: 6, color: "#6B7280" },
+  badge: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 14,
+    fontWeight: "800",
+    overflow: "hidden",
+    color: "#fff",
+  },
+  ok: { backgroundColor: "#059669" },
+  ng: { backgroundColor: "#DC2626" },
+  input: {
+    borderColor: "#E5E7EB",
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  error: { color: "#B91C1C" },
   flash: {
     position: "absolute",
-    left: 16,
-    right: 16,
     bottom: 24,
+    alignSelf: "center",
+    backgroundColor: "#111827",
+    paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 10,
-    alignItems: "center",
+    borderRadius: 18,
+    opacity: 0.92,
   },
-  flashOk: { backgroundColor: "#16a34a" },
-  flashErr: { backgroundColor: "#b91c1c" },
   flashText: { color: "#fff", fontWeight: "800" },
 });

@@ -1,300 +1,195 @@
-# Real‑Time Attendance — MVP Delivery Plan (Expo Go, Android First)
+# Real-Time Attendance — Final Execution Plan (Step 0–7)
 
-**App Name (header): _Real time attendance_**  
-**Scope:** Android + Expo Go only (no Dev Client) for Milestones M0–M3.  
-**Backend:** Fresh Supabase project (new schema).  
-**Auth (MVP):** Guest/dummy user (switchable to Supabase Auth later).  
-**Groups:** Enabled from day one (roles: `organizer`, `member`; multiple organizers allowed).  
-**Timezones:** Store **UTC**, display in **device local time**.  
-**Location policy:** Foreground only; prompt to enable GPS if off.  
-**Check‑in rules:** Within radius and time window; one row per user+event (re‑checks update).  
-**Comments:** Max 150 chars; presets: “Here now”, “Arriving in 5 min”, “Running late”.  
-**Realtime:** Supabase Realtime on `attendance` table (event‑scoped).
+**Scope:** Outdoor first, ~30 participants per event. Initial rollout in Australia (Pixel 6a test device).  
+**Tech posture:** Expo Go until Step 6 (no prebuild), then minimal Dev Client for notifications/geofencing.  
+**Core differentiation:** Hybrid arrival (GPS + rotating QR), rank fairness, rescue UX, role tags, invites + .ics, safety (ICE/checkout), monthly league (EN) and sponsor perks based on attendance threshold.
 
 ---
 
-## 1) Milestones & Acceptance Criteria
+## 0) Dev Posture (one-time)⇒DONE!!
 
-### M0 — Project bootstrap (Expo Go + Location sanity)
+- Run with Expo Go only:
+  - `npx expo start --go --tunnel -c`
+- Dependency discipline:
+  - Add deps via `npx expo install <pkg>` only.
+  - Save exact versions; commit lockfile; `npx expo doctor --fix-dependencies`.
+- Permissions UX:
+  - Require “While in use” + Precise ON. If Precise OFF, lock “Arrived!” and deep-link to Settings.
+- Dev telemetry (dev only): log `accuracy_m`, request elapsed, `battery%`.
+- Mock detection: surface `mocked` flag as “Needs review” in Live list (no auto-ban).
 
-**Goal:** A clean Expo project that runs instantly on Android device via Expo Go and can read GPS.
-**Tasks** - Create new repo & Expo project rta-mvp using ⇒created completely new folder named _zero-RTA_
-
-**expo-router**. - Add expo-location and a minimal Location Test screen. - Wire app start to route to a Home/Tabs with
-**Organize** tab available. - Add .env loading and config guard (safe if missing). - Set up ESLint + TypeScript strict, basic CI lint job (optional).
-**Acceptance** - On device, open via Expo Go; tap
-
-**Organize ▸ Location Test**; see coordinates & accuracy update.
-
-### M1 — Data model + groups (no auth, guest mode)
-
-**Goal:** Minimal database ready; app uses guest identity to create groups/events.
-
-**Tasks**
-
-- Provision a fresh **Supabase** project.
-- Create tables:
-  - `groups(id, name, description, created_by, created_at, …)`
-  - `group_members(group_id, user_id, role)` with roles `organizer`|`member`
-  - `events(id, group_id, title, start_utc, end_utc, lat, lng, radius_m, window_minutes, location_name, created_by, …)`
-  - `attendance(event_id, user_id, checked_in_at_utc, lat, lng, accuracy_m, comment)` (PK `(event_id, user_id)`)
-  - `event_comments(id, event_id, user_id, body, created_at_utc)`
-- Enable **Realtime** on `attendance` (and optionally `event_comments`).
-- In app, persist a random **guest ID** locally (AsyncStorage) as `user_id` placeholder.
-- Build simple UI: create group, list own groups, create event with **numeric lat/lng inputs** (map picker deferred).
-
-**Acceptance**
-
-- Can create a group and an event (with radius & time window).
-- Tables exist and rows insert from the app as guest user.
+**Definition of Done (DoD):** Tunnel stable on device, dependencies installed only via `expo install`, Precise-required UI works.
 
 ---
 
-### M2 — Check‑in flow + geofence rules
+## 1) Server & Data (minimal, privacy-first)⇒DONE!!
 
-**Goal:** Users can see an event, distance to venue, and check in if eligible.
+- **Events:** add `event_timezone`, `radius_m`, `grace_in_min=5`, `grace_out_min=10`, `venue_preset('park'|'city'|'beach')`.
+- **Attendance:** add `method('gps'|'qr')`, `accuracy_m`, `dwell_s`, `mock_flag`.
+- **New tables:**
+  - `event_qr_tokens(event_id, token_hash, expires_at, created_by)` – rotating QR (45 s).
+  - `invite_tokens(event_id, token_hash, expires_at, redeemed_by)` – invite links.
+  - `event_members(event_id, user_id, role text[])` – role tags (Pacer, Sweeper, Photographer).
+  - `user_profile(user_id, ice_name, ice_phone)` – safety.
+  - `event_checkouts(event_id, user_id, checkout_time)` – “I’m home” confirmation.
+- **Storage policy:** no continuous tracks; store only arrival/departure timestamps and accuracy. Retain 30 days.
+- **RLS:** participants see own data; organizers see their group; all manual corrections are audit-logged.
+- **Pin editing:** participants forbidden; organizers only, with audit log.
 
-**Tasks**
+**APIs/RPC (names only):**  
+`finalize_arrival(event_id, user_id, accuracy_m, dwell_s, method)` (atomic rank on server time)  
+`issue_qr_token(event_id)` → `redeem_qr_token(event_id, token)`  
+`redeem_invite_token(event_id, token)`  
+`mark_checkout(event_id, user_id)`
 
-- Event detail screen:
-  - Show event title, local time (convert from UTC), venue name, **distance** (Haversine).
-  - Show **eligibility**: inside radius AND within `[start−window, end+window]`.
-  - Enforce accuracy ≤ `max(50m, radius×2)`; if worse, show warning and **Retry**.
-- “Here now” button appears only when eligible; submit check‑in (upsert by `event_id+user_id`).
-- Optional free text (≤150 chars) and 3 presets.
-- Organizer view (simple): live list of checked‑in users for selected event (Supabase Realtime).
-
-**Acceptance**
-
-- Standing near a test lat/lng (or edited to your current spot), check‑in succeeds; organizer list updates live on second device/session.
-
----
-
-### Dev-Only Role Switch (Organizer ⇄ Attendee) — Plan(After M2)
-
-**Goal**
-
-Speed up UI/flows verification by allowing local role override during development/demo, without weakening server-side security.
-
-**Scope**
-
-Applies to: Expo Go, development builds only.
-
-Affects: Navigation guards, conditional UI (buttons/sections), and sample data seeding.
-
-Does not affect: Server-side authorization (RLS) or production builds.
-
-**UX / Access**
-
-Entry point (one of these, in order of preference):
-
-Hidden route /\_debug in the app (reachable via manual URL or a tiny “Dev” cog on Profile).
-
-Long-press app title (≥ 3s) opens a Dev Panel modal.
-
-**UI in Dev Panel**:
-
-Role toggle: Attendee | Organizer.
-
-“Clear override” button.
-
-Small badge rendered app-wide: DEV ROLE: Organizer/Attendee.
-
-**Source of Truth & Logic**
-
-Effective role = roleOverride ?? serverRole ?? 'attendee'.
-
-Where stored: in client state (e.g., zustand) under roleOverride.
-
-Persistence: default memory-only; optional AsyncStorage persistence behind a dev flag.
-
-Compile-time guard: Entire Dev Panel and override logic behind **DEV** or EXPO_PUBLIC_ENABLE_DEV_SWITCH === 'true'.
-
-**Feature Gates (examples)**
-
-Organizer-only UI: group/event creation & edit, attendance list (live), reports.
-
-Attendee-only UI: check-in button, comment presets.
-
-Shared: event details, distance/status.
-
-**Realtime & Data**
-
-Realtime: unchanged; subscribe per event_id. The override only changes what we show, not what we’re allowed to mutate.
-
-Server safety (future with Auth/RLS): All writes continue to be validated by RLS; override never grants extra DB rights.
-
-**Test Plan (acceptance)**
-
-A1: With override=Organizer, organizer panels render; with Attendee, they hide immediately.
-
-A2: Realtime attendance list updates when another client checks in.
-
-A3: Override cleared → UI follows serverRole (or falls back to attendee when unauthenticated).
-
-A4: In a production build, the Dev Panel is not reachable, and roleOverride is ignored.
-
-A5: Badge shows only in dev; never in prod.
-
-**Risks & Mitigations**
-
-Risk: Dev switch ships to prod by mistake.
-Mitigation: **DEV** guard + CI check grepping for /\_debug and ENABLE_DEV_SWITCH.
-
-Risk: Confusion during demos.
-Mitigation: Always show the dev badge when override is active.
-
-Risk: False sense of permission.
-Mitigation: Keep RLS tests in a separate checklist before release.
-
-**Tasks (checklist)**
-
-Add Dev Panel entry (hidden route or long-press gesture).
-
-Add roleOverride to client state; compute effectiveRole.
-
-Wrap organizer/attendee UI with gates using effectiveRole.
-
-Add global DEV ROLE badge.
-
-Env flag EXPO_PUBLIC_ENABLE_DEV_SWITCH (default false).
-
-E2E checks for A1–A5 on Android (Expo Go).
-
-CI rule: fail build if dev switch is enabled for production.
-
-**Removal / Production Hardening**
-
-Build-time: Ensure **DEV** is false in release; do not bundle /\_debug.
-
-Runtime: If env flag is off, ignore any stored override; fall back to serverRole.
-
-CI: Script to assert no Dev Panel code/route present in production bundle.
-
-### M3 — UX polish & non‑breaking extras
-
-**Goal:** Smoother organizer and participant UX without introducing Dev Client.
-
-**Tasks**
-
-- Basic “My events” & “My groups” navigation.
-- Improve empty/edge states and toasts.
-- Optional **map preview** (web embed) for venue (no native maps dependency).
-
-**Acceptance**
-
-- Happy path feels smooth: create event → check‑in → organizer sees it live.
+**DoD:** UTC persisted, local TZ rendered; RLS and auditing active; QR arrival works; no continuous tracks stored.
 
 ---
 
-### M4 — Hardening & next steps (post‑MVP)
+## 2) Outdoor MVP (Expo Go, foreground only)
 
-- **Swap guest→Supabase Auth** (email OTP or email+password).
-- **Native map picker** + reverse geocoding (requires Dev Client; schedule later).
-- **Push notifications** (arrival windows, organizer alerts).
-- **RLS** policies to secure groups (organizers manage their groups, users edit own check‑ins).
+- **Foreground location:** `watchPosition` with `interval 15–30 s`, `distanceFilter 25–50 m`.
+- **Arrival rule:** venue preset radius + `accuracy ≤ 50–75 m` + `dwell ≥ 10 s` → unlock **Arrived!**.  
+  Submit to `finalize_arrival`:
+  - Rank is assigned by **server receive time**; ties break by better `accuracy`, then `user_id`.
+- **Live list:** present/“maybe away” badge (no update ≥ 3–5 min), medals for ranks 1–3.
+- **Hybrid arrival:**
+  - GPS = default.
+  - QR = rotating token (45 s). Awards on-time credit only; excluded from Top-3.
+- **Invites + calendar:** deep-link `rta://join?token=...`; one-tap `.ics` (TZID, venue URL).
+- **Rescue UX:** if Precise OFF → Settings; if poor accuracy/indoors → big CTA to QR; if network timeouts → retry (15 s).
+- **Safety:** ICE fields and “I’m home” checkout button.
 
----
+**DoD (measured on Pixel 6a):**
 
-## 2) Product Rules (Finalized)
-
-- **Check‑in window:** Default ±30 min (override per event via `window_minutes`).
-- **Radius:** Default **50 m**; min **10 m**, max **200 m**.
-- **Accuracy rule:** Must be ≤ `max(50, radius×2)` to accept; otherwise show warning and allow retry.
-- **Re‑checks:** Upsert; keep latest timestamp & location.
-- **Comments:** Optional; ≤150 chars; presets: “Here now”, “Arriving in 5 min”, “Running late”.
-- **Realtime scope:** Organizer view subscribes **only to the active `event_id`**.
-- **Permissions:** Foreground location only; if GPS disabled, prompt to enable.
-- **Roles & moderation:**
-  - `member`: can create groups/events (becomes organizer of created group), can edit/delete **own** check‑ins/comments.
-  - `organizer`: can edit/delete **any** check‑in/comment within their group; manage events & membership.
+- False arrivals ≤ 2% on parks/beaches. In urban canyons, QR rescue success ≥ 95%.
+- Battery ≤ 8% per hour (foreground).
+- Live and History sync instantly; `.ics` download and invite join flow work.
 
 ---
 
-## 3) Folder Layout (new project)
+## 3) AU Pilot (3 locations × 3 events)
 
-```
-app/
-  _layout.tsx
-  (tabs)/
-    _layout.tsx
-    organize/
-      index.tsx                 # groups list + create
-      events/
-        [id].tsx                # event detail & check-in
-      admin/
-        [eventId]/live.tsx      # organizer live list
-    profile/
-      index.tsx
-lib/
-  supabase.ts                    # client + helpers
-  geo.ts                         # distance, accuracy helpers
-stores/
-  session.ts                     # guest ID, simple settings
-_env/
-  .env.example                   # EXPO_PUBLIC_SUPABASE_URL/ANON
-```
+- **Locations:** park, urban canyon, beach; each with 10–30 participants.
+- **Metrics:** false/ missed arrivals, avg accuracy, rank inversions, QR rescue rate, battery, Precise-OFF rate, ICE/checkout usage.
+- **Adjustments:** fine-tune radius presets; tweak “maybe away” window (3–5 min).
+
+**Go criteria:** false ≤ 2% (park/beach); QR rescue ≥ 95% (urban); rank inversions ≤ 1%; battery ≤ 8%/h.
 
 ---
 
-## 4) Tech Decisions
+## 4) Late/Early (practical outdoor logic)
 
-- **Expo Go only** until M3: avoids native dependency churn; faster iteration.
-- **No native maps** in MVP: venue coordinates entered numerically; optional web preview.
-- **UTC storage, local display** for all event/check‑in timestamps.
-- **Guest user first** to unblock flows; switch to Supabase Auth later without breaking DB.
+- **Arrival time:** moment conditions are true and server receives event.
+- **Late:** `arrival_time > start + 5 min`.
+- **Left-early:** `last_valid_seen < end − 10 min`.
+- **UX:** badges in Live list with reason tooltip (±m, 10 s dwell).
+- **Manual correction:** organizer can adjust with required reason (audit).
 
----
-
-## 5) Runbook (high level)
-
-1. **Create project**: `npx create-expo-app rta-mvp -t tabs (expo-router)`
-2. **Add libs**: `npx expo install expo-location @react-native-async-storage/async-storage`
-3. **Env**: Set `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON` in `.env`.
-4. **Device run**: `npx expo start --go --lan` → scan QR in Expo Go.
-5. **Tables**: create schema in Supabase; point app to new URL/Anon key.
-6. **Ship M0→M3** following acceptance criteria.
+**DoD:** ≤ 2% misclassification; organizer edits reflect immediately and are audit-logged.
 
 ---
 
-## 6) Risks & Mitigations
+## 5) Lightweight Anti-cheat
 
-- **Accuracy variance indoors** → encourage outdoors or retry; enforce accuracy cap.
-- **Expo Go limits** (no native map picker) → numeric input + web preview; plan Dev Client later.
-- **Realtime quotas** → keep subscriptions scoped to single `event_id`.
-- **Clock skew** → rely on server time for acceptance when Auth is added; MVP can use device time.
+- Accept only positions with `accuracy ≤ 75 m` and `dwell ≥ 10 s`; reject “teleports” (> 150 km/h).
+- Android: surface `mock_flag`; tag “Needs review” (no auto-ban).
+- Server invariants: first valid arrival locks rank; participant cannot move event pin.
+
+**DoD:** 100% of mocked reports flagged; zero accidental bans; weekly flag rate report.
 
 ---
 
-## 7) Success Criteria (MVP)
+## 6) Notifications & Geofencing (Dev Client, minimal native)
 
-- Create group & event on device.
-- Check‑in succeeds within configured radius/window.
-- Organizer screen live‑updates without manual refresh.
-- No native builds required; all flows run in Expo Go.
+- **When to prebuild:** only now. Add `expo-notifications`, `expo-task-manager`, `expo-location` geofencing.
+- **Android 13+:** runtime POST_NOTIFICATIONS, separate flow for ACCESS_BACKGROUND_LOCATION.  
+  Declare Foreground Service (location) with persistent channel. Ensure Google Play services up to date.
+- **Notifications:**
+  - Participant: local reminder T−15 min; local notification on geofence entry (deep-link to arrival view).
+  - Organizer: batched arrival notifications (at most one per 30 s).
+- **Geofences:** active only during event window; use re-entry to trigger foreground checks (no continuous background tracking).
 
-## 8) Guest ID – Production Considerations
+**DoD:** organizer notification delay ≤ 5 s; opt-in rate ≥ 80%; background permission flow succeeds.
 
-Currently, the app uses a simple UUID generator (`Math.random()`-based) stored in AsyncStorage.  
-This is fine for development, but before production we should improve reliability and security.
+---
 
-**Future improvements to consider:**
+## 7) Rewards → Monthly League (EN) → Sponsor Perks
 
-1. **Switch to `crypto.getRandomValues` for UUID generation**
+### 7.1 Stamps/Badges
 
-   - Reason: `Math.random()` is not cryptographically strong. Using `crypto.getRandomValues` ensures truly unique and secure IDs.
+- On-time +1; Top-3 +2/+1/+1 (GPS only, once per event); optional Early-bird +1 (T−5 to 0); Streak 3/5/10 → +1/+2/+3.
+- QR arrivals: on-time only; not eligible for Top-3.
 
-2. **Implement guest → user migration**
+### 7.2 Monthly League (English only)
 
-   - Reason: When adding login/authentication, we need a way to transfer existing guest data (events, logs, etc.) to the authenticated user account, so users don’t lose history.
+- Metrics: attendance count, Top-3 count, current streak.
+- Shareable recap image (EN) generated by Edge Function (target ≤ 1.5 s).
+- Retain leaderboards and recap history for 12 months.
 
-3. **Add a "Reset Guest ID" option in settings**
-   - Reason: Useful for testing, troubleshooting, or if multiple people share one device. It allows creating a fresh guest profile without reinstalling the app.
+### 7.3 Sponsor Perks (attendance threshold)
 
-## Strategy to differentiate History from Organize
+- Rule: dynamic threshold **X = ceil(0.6 × number_of_events_in_month)**.
+- QR arrivals **count toward X** (Top-3 still GPS-only).
+- Cap: max 1 perk per user per month.
+- Delivery: unique per-user code (offline friendly); stock consumed on claim (“first-come”).
+- Data model (concept):
+  - `sponsor`, `sponsor_offers`, `reward_rules(scope='monthly', condition={min_attend:X}, prize=offer_id)`,
+    `sponsor_awards`, `sponsor_redemptions` with `UNIQUE(user_id, month, offer_id)`.
 
-- **Copy**: "History of this device's check-ins (and creations if Organizer)."
-- **Actions**: add note, export (CSV/PDF), share proof, quick re-check-in/comment.
-- **Signals**: check-in timestamp, GPS accuracy (±m), streaks/counters.
-- **Filters**: Created vs Checked-in, group, date range (Today / 7d / 30d).
-- **Future**: with login, migrate `guest_id -> user_id` for multi-device history; optionally include RSVP/bookmarks so upcoming items appear before check-in.
+**DoD:** atomic rank (no duplicates), on-time mis-awards ≤ 1%; month-end batch ≤ 60 s; 1-tap claim, no duplicate grants.
+
+---
+
+## Cross-cutting: Privacy, Consent, Localization, Accessibility
+
+- Consent copy must state purpose, 30-day retention, visibility scope, and “not payroll-official”.
+- Localization: recap images EN; app strings can be EN/JA later (start with EN).
+- Accessibility: large “Arrived!” button, high-contrast QR CTA, screen-reader labels, haptic feedback on state change.
+
+---
+
+## KPIs (acceptance targets)
+
+| Area           | KPI                           | Target |
+| -------------- | ----------------------------- | ------ |
+| Accuracy       | False arrivals (park/beach)   | ≤ 2%   |
+| Urban fallback | QR rescue success             | ≥ 95%  |
+| Fairness       | Rank inversions               | ≤ 1%   |
+| Battery        | Foreground drain (1 h)        | ≤ 8%   |
+| Notifications  | Organizer delay               | ≤ 5 s  |
+| Permissions    | Precise OFF rate (post-pilot) | ≤ 15%  |
+| Engagement     | Recap image download/share    | ≥ 30%  |
+| Safety         | “I’m home” completion         | ≥ 90%  |
+
+---
+
+## Risks → Mitigations
+
+| Risk                     | Mitigation                                                                       |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| GPS jitter/urban canyons | 10 s dwell, accuracy gate, venue presets, QR rescue front-and-center             |
+| Dependency/ABI drift     | No prebuild before Step 6; `expo install` only; lockfile; doctor fix             |
+| Cheating/mock apps       | Mock flag, speed sanity checks, first-arrival lock, organizer audit tools        |
+| Consent friction         | Clear purpose, minimal data, easy opt-out, QR alternative                        |
+| Battery concerns         | Foreground-only checks, distanceFilter/interval tuning, geofence only as trigger |
+
+---
+
+## Timeline (suggested sprints)
+
+- **Sprint 1:** Step 0–1 (RLS, auditing, QR tokens)
+- **Sprint 2:** Step 2 (MVP: hybrid arrival, invites + .ics, rescue UX, ICE/checkout)
+- **Sprint 3:** Step 3 (AU pilot; finalize presets and windows)
+- **Sprint 4:** Step 4–5 (Late/Early + anti-cheat)
+- **Sprint 5:** Step 6 (Dev Client, notifications, geofencing)
+- **Sprint 6:** Step 7 (Stamps, league EN, sponsor perks, recap images)
+
+---
+
+## Reference presets and rules
+
+- **Venue presets:** Park 75 m, City 120 m, Beach 100 m.
+- **Arrival evaluation:** inside radius AND accuracy ≤ 50–75 m AND dwell ≥ 10 s.
+- **Ranking tiebreakers:** server receive time → better accuracy → `user_id` ascending.
+- **Monthly perk threshold:** `X = ceil(0.6 × events_in_month)`. QR arrivals count toward X. One perk per user per month.
