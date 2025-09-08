@@ -22,7 +22,7 @@
 
 ---
 
-## 1) Server & Data (minimal, privacy-first)⇒DONE!!
+## Step 1) Server & Data (minimal, privacy-first)⇒DONE!!
 
 - **Events:** add `event_timezone`, `radius_m`, `grace_in_min=5`, `grace_out_min=10`, `venue_preset('park'|'city'|'beach')`.
 - **Attendance:** add `method('gps'|'qr')`, `accuracy_m`, `dwell_s`, `mock_flag`.
@@ -46,7 +46,7 @@
 
 ---
 
-## 2) Outdoor MVP (Expo Go, foreground only)
+## step 2) Outdoor MVP (Expo Go, foreground only)
 
 - **Foreground location:** `watchPosition` with `interval 15–30 s`, `distanceFilter 25–50 m`.
 - **Arrival rule:** venue preset radius + `accuracy ≤ 50–75 m` + `dwell ≥ 10 s` → unlock **Arrived!**.  
@@ -68,7 +68,24 @@
 
 ---
 
-## 3) AU Pilot (3 locations × 3 events)
+### 未テスト：超簡易スモークテスト（2 手順だけ）
+
+QR：同一 QR を連続スキャン → 1 回だけカウントされることを見る（3s デバウンス確認）。
+
+GPS：半径内で 10 秒待ち →「Arrived」を押す → Live に自分が出れば OK。
+（精度が悪いときは QR 誘導が出る＝正常）
+
+後回しメモ（すぐ再開できる用）
+
+HTTPSブリッジ：/e/<id>→rta://events/<id>、/j/<tok>→rta://join?token=<tok> を Cloudflare Workers で作成。ICSの URL/本文はこの https に差し替え。
+
+QR TTL 強制：サーバRPCで now() とトークン発行スロットを照合（±45s以内のみ有効）。
+
+Precise誘導：精度不足 or 位置権限が“おおよそ”の時は「設定を開く」ボタン（Linking.openSettings() / Androidは ACTION_LOCATION_SOURCE_SETTINGS）。
+
+Safety：プロフィールに ICE フィールド、イベント詳細に “I’m home”（退場記録の簡易RPC）。
+
+## step 3) AU Pilot (3 locations × 3 events)
 
 - **Locations:** park, urban canyon, beach; each with 10–30 participants.
 - **Metrics:** false/ missed arrivals, avg accuracy, rank inversions, QR rescue rate, battery, Precise-OFF rate, ICE/checkout usage.
@@ -78,7 +95,7 @@
 
 ---
 
-## 4) Late/Early (practical outdoor logic)
+## step 4) Late/Early (practical outdoor logic)
 
 - **Arrival time:** moment conditions are true and server receives event.
 - **Late:** `arrival_time > start + 5 min`.
@@ -90,7 +107,7 @@
 
 ---
 
-## 5) Lightweight Anti-cheat
+## step 5) Lightweight Anti-cheat
 
 - Accept only positions with `accuracy ≤ 75 m` and `dwell ≥ 10 s`; reject “teleports” (> 150 km/h).
 - Android: surface `mock_flag`; tag “Needs review” (no auto-ban).
@@ -100,7 +117,7 @@
 
 ---
 
-## 6) Notifications & Geofencing (Dev Client, minimal native)
+## step6) Notifications & Geofencing (Dev Client, minimal native)
 
 - **When to prebuild:** only now. Add `expo-notifications`, `expo-task-manager`, `expo-location` geofencing.
 - **Android 13+:** runtime POST_NOTIFICATIONS, separate flow for ACCESS_BACKGROUND_LOCATION.  
@@ -114,7 +131,7 @@
 
 ---
 
-## 7) Rewards → Monthly League (EN) → Sponsor Perks
+## step 7) Rewards → Monthly League (EN) → Sponsor Perks
 
 ### 7.1 Stamps/Badges
 
