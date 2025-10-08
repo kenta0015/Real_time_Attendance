@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "rta-zero",
+    "slug": "rta-zero",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "scheme": "rta",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.anonymous.rtazero",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location",
+          "remote-notification"
+        ],
+        "NSLocationWhenInUseUsageDescription": "We use your location to verify on-site attendance.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "We use your location in the background to detect venue entry and exit.",
+        "NSLocationAlwaysUsageDescription": "We use your location in the background to detect venue entry and exit."
+      }
+    },
+    "android": {
+      "package": "com.anonymous.rtazero",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "POST_NOTIFICATIONS",
+        "FOREGROUND_SERVICE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-camera",
+      "expo-notifications",
+      "expo-mail-composer"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "e1c6e861-3cfa-4e4e-a274-1ca512e04afd"
+      }
+    },
+    "owner": "kenta0015"
+  }
+}
