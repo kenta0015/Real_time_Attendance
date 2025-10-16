@@ -17,11 +17,11 @@
 $adb="$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe"
 & $adb kill-server; & $adb start-server
 & $adb pair 192.168.xxx.xxx:xxxx
-& $adb connect 192.168.xxx.xxx:xxxx
+& $adb connect 192.168.xxx.xxx:xxxx (IP adress&portを使う)
 & $adb devices -l  # should show: your-device  device
 ```
 
-### B. USB 
+### B. USB
 
 - On device: **Developer options → USB debugging ON**  
   Revoke USB debugging authorizations once → reconnect USB → **Allow** the RSA prompt.
@@ -46,8 +46,6 @@ npx expo start --dev-client --tunnel
 
 ---
 
-
-
 ## 2) Connect the Dev Client to Metro
 
 - In the Dev Client, **Scan the QR** shown in the Metro terminal, **or**
@@ -69,6 +67,8 @@ $env:ANDROID_SERIAL = $serial
 
 # Deep links
 npx uri-scheme open "rta://join" --android
+or
+& $adb -s $serial shell am start -a android.intent.action.VIEW -d "rta://join"
 npx uri-scheme open "rta://organize/location-test" --android
 ```
 

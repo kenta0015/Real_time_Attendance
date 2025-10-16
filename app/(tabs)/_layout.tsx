@@ -72,16 +72,9 @@ export default function TabLayout() {
         }}
       />
 
-      {/* --- HIDE auto-registered nested routes under (tabs) --- */}
+      {/* --- HIDE auto-registered nested routes under (tabs) that actually exist under (tabs)/me --- */}
       <Tabs.Screen name="me/events" options={{ href: null }} />
       <Tabs.Screen name="me/groups" options={{ href: null }} />
-      <Tabs.Screen name="organize/admin" options={{ href: null }} />
-      <Tabs.Screen name="organize/events/[id]" options={{ href: null }} />
-      <Tabs.Screen name="organize/events/[id]/live" options={{ href: null }} />
-      <Tabs.Screen name="organize/events/[id]/qr" options={{ href: null }} />
-      <Tabs.Screen name="organize/events/[id]/invite" options={{ href: null }} />
-      <Tabs.Screen name="organize/events/[id]/scan" options={{ href: null }} />
-      <Tabs.Screen name="organize/location-test" options={{ href: null }} />
 
       {/* Debug tab (dev only or explicitly enabled) */}
       <Tabs.Screen

@@ -1,6 +1,13 @@
 // app/(tabs)/debug.tsx
-import { useEffect, useState } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { useEffect, useState, useMemo } from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  DeviceEventEmitter,
+  FlatList,
+  Pressable,
+} from "react-native";
 import { useRouter } from "expo-router";
 import {
   useDevRoleStore,
@@ -16,6 +23,15 @@ import Button from "../ui/Button";
 import Pill from "../ui/Pill";
 import { COLORS, SPACING } from "../ui/theme";
 
+// ★ 追加: グローバルロガーのバッファ閲覧
+import { EMIT_EVT, getBufferedLogs } from "../../lib/logger";
+
+type LogEntry = {
+  t: number;
+  level: "log" | "info" | "warn" | "error";
+  msg: string;
+};
+
 export default function DebugDevPanel() {
   const router = useRouter();
   const enabled = devSwitchEnabled();
@@ -28,6 +44,10 @@ export default function DebugDevPanel() {
 
   const [restored, setRestored] = useState(false);
 
+  // === 追加: ログ状態 ===
+  const [logs, setLogs] = useState<LogEntry[]>(getBufferedLogs() as any);
+  const [levelFilter, setLevelFilter] = useState<"all" | LogEntry["level"]>("all");
+
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -38,6 +58,19 @@ export default function DebugDevPanel() {
       mounted = false;
     };
   }, []);
+
+  // === 追加: ログ購読（リアルタイム更新） ===
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener(EMIT_EVT, () => {
+      setLogs(getBufferedLogs() as any);
+    });
+    return () => sub.remove();
+  }, []);
+
+  const filtered = useMemo(() => {
+    if (levelFilter === "all") return logs;
+    return logs.filter((l) => l.level === levelFilter);
+  }, [logs, levelFilter]);
 
   if (!enabled) {
     return (
@@ -85,6 +118,45 @@ export default function DebugDevPanel() {
     });
   };
 
+  // === 追加: ログ1行レンダラ ===
+  const renderLog = ({ item }: { item: LogEntry }) => {
+    const time = new Date(item.t).toLocaleTimeString();
+    const color =
+      item.level === "error"
+        ? "#ef4444"
+        : item.level === "warn"
+        ? "#f59e0b"
+        : item.level === "info"
+        ? "#2563eb"
+        : COLORS.text;
+    return (
+      <View style={styles.logRow}>
+        <Text style={styles.logTime}>{time}</Text>
+        <Text style={[styles.logLevel, { color }]}>{item.level.toUpperCase()}</Text>
+        <Text style={styles.logMsg} numberOfLines={4}>
+          {item.msg}
+        </Text>
+      </View>
+    );
+  };
+
+  const LevelButton = ({ val, label }: { val: "all" | LogEntry["level"]; label: string }) => {
+    const active = levelFilter === val;
+    return (
+      <Pressable
+        onPress={() => setLevelFilter(val)}
+        style={[
+          styles.filterBtn,
+          active && { backgroundColor: "#111827", borderColor: "#111827" },
+        ]}
+      >
+        <Text style={[styles.filterBtnText, active && { color: "white", fontWeight: "800" }]}>
+          {label}
+        </Text>
+      </Pressable>
+    );
+  };
+
   return (
     <View style={styles.container}>
       <Text style={styles.h1}>Dev Panel</Text>
@@ -122,6 +194,29 @@ export default function DebugDevPanel() {
         <Button title="Force Toggle (no persist)" onPress={forceToggleNoPersist} variant="outline" />
         <Button title="Ping Log" onPress={pingLog} variant="outline" />
       </View>
+
+      {/* === 追加: アプリ内ログビューア === */}
+      <Card style={{ marginTop: SPACING.md }}>
+        <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+          <Text style={styles.h2}>In-App Logs</Text>
+          <View style={{ flex: 1 }} />
+          <View style={{ flexDirection: "row", gap: 6 }}>
+            <LevelButton val="all" label="ALL" />
+            <LevelButton val="info" label="INFO" />
+            <LevelButton val="warn" label="WARN" />
+            <LevelButton val="error" label="ERROR" />
+          </View>
+        </View>
+
+        <FlatList
+          data={filtered.slice().reverse()} // 新しい順に表示
+          keyExtractor={(_, i) => String(i)}
+          renderItem={renderLog}
+          style={{ maxHeight: 320 }}
+          contentContainerStyle={{ paddingBottom: 6 }}
+          initialNumToRender={20}
+        />
+      </Card>
     </View>
   );
 }
@@ -130,8 +225,24 @@ const styles = StyleSheet.create({
   container: { flex: 1, padding: SPACING.lg, gap: SPACING.md, backgroundColor: COLORS.bg },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: COLORS.bg },
   h1: { fontSize: 22, fontWeight: "800", color: COLORS.text, marginBottom: 4 },
+  h2: { fontSize: 16, fontWeight: "800", color: COLORS.text },
   kv: { color: COLORS.text, fontSize: 16 },
   bold: { fontWeight: "800", color: COLORS.text },
   row: { flexDirection: "row", gap: SPACING.md, marginTop: 4 },
   muted: { color: COLORS.textMuted },
+
+  // Logs
+  logRow: { flexDirection: "row", gap: 8, paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  logTime: { width: 74, color: COLORS.textSubtle },
+  logLevel: { width: 64, fontWeight: "800" },
+  logMsg: { flex: 1, color: COLORS.text },
+  filterBtn: {
+    borderWidth: 1,
+    borderColor: "#D1D5DB",
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: "white",
+  },
+  filterBtnText: { color: "#111827", fontWeight: "600" },
 });

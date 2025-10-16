@@ -2,20 +2,45 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "target": "ES2019",
-    "lib": ["ES2020"],
-    "allowJs": true,
+    "lib": [
+      "ES2020"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["*"],
-      "@/app/*": ["app/*"],
-      "@/styles/*": ["app/styles/*"],
-      "@/ui/*": ["app/ui/*"],
-      "@/organize/*": ["app/organize/*"],
-      "@/lib/*": ["lib/*"]
+      "@/*": [
+        "*"
+      ],
+      "@/app/*": [
+        "app/*"
+      ],
+      "@/styles/*": [
+        "app/styles/*"
+      ],
+      "@/ui/*": [
+        "app/ui/*"
+      ],
+      "@/organize/*": [
+        "app/organize/*"
+      ],
+      "@/lib/*": [
+        "lib/*"
+      ]
     }
-  }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "app.config.js",
+    "babel.config.js",
+    "metro.config.js",
+    "shims/**/*.js"
+  ]
 }
-
-

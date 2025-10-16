@@ -1,562 +1,241 @@
 // app/(tabs)/organize/events/[id].tsx
-import { AttendeeOnly } from "../../../../components/roleGates";
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
-  Button,
-  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
   Alert,
+  DeviceEventEmitter,
   Platform,
-  ScrollView,
-  ToastAndroid,
-  Keyboard,
   Linking,
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
-import * as Location from "expo-location";
-import * as Battery from "expo-battery";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../../../../lib/supabase";
-import { getGuestId } from "../../../../stores/session";
-import { haversineMeters, isWithinWindow, accuracyThreshold } from "../../../../lib/geo";
+
+type Role = "organizer" | "attendee";
+const ROLE_KEY = "rta_dev_role";
 
 type EventRow = {
   id: string;
   title: string | null;
-  start_utc: string;
-  end_utc: string;
-  lat: number;
-  lng: number;
-  radius_m: number;
-  window_minutes: number;
-  location_name: string | null;
+  start_utc: string | null;
+  end_utc: string | null;
+  venue_lat: number | null;
+  venue_lng: number | null;
+  venue_radius_m: number | null;
+  location_name?: string | null;
 };
 
-type Coords = { lat: number | null; lng: number | null; acc: number | null };
+const BLUE = "#2563EB";
+const CARD_BORDER = "#E5E7EB";
 
-export default function EventDetailScreen() {
-  const WATCH_TIME_MS = 15000; // 15s
-  const WATCH_DIST_M = 25; // 25m
-  const DWELL_MS = 10000; // 10s
-  const RETRY_MS = 15000; // network retry delay
-  const HEARTBEAT_MS = 30000; // 30s: update last_valid_seen_utc while in-range
+export default function OrganizeEventDetail() {
+  const params = useLocalSearchParams<{ id?: string }>();
+  const eid = useMemo(() => {
+    const s = Array.isArray(params.id) ? params.id[0] : params.id;
+    return s && s !== "undefined" ? s : null;
+  }, [params.id]);
 
-  const { id } = useLocalSearchParams<{ id: string }>();
-  const [event, setEvent] = useState<EventRow | null>(null);
-  const [coords, setCoords] = useState<Coords>({ lat: null, lng: null, acc: null });
-  const watcher = useRef<Location.LocationSubscription | null>(null);
+  // --- dev role (attendee/organizer) を監視 ---
+  const [role, setRole] = useState<Role>("organizer");
+  const loadRole = useCallback(async () => {
+    const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
+    setRole(v === "attendee" ? "attendee" : "organizer");
+  }, []);
+  useEffect(() => {
+    loadRole();
+    const sub = DeviceEventEmitter.addListener("rta_role_changed", loadRole);
+    return () => sub.remove();
+  }, [loadRole]);
+
+  // --- 参加者は新UIへ即リダイレクト（ここが今回の要） ---
+  useEffect(() => {
+    if (role === "attendee" && eid) {
+      router.replace(`/events/${eid}`); // 新しい参加者UIへ統一
+    }
+  }, [role, eid]);
+
+  // --- イベント読み込み（主に主催者UI表示用） ---
+  const [loading, setLoading] = useState(true);
+  const [eventRow, setEventRow] = useState<EventRow | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [comment, setComment] = useState("");
-  const [guestId, setGuestId] = useState<string | null>(null);
-
-  const [preciseAllowed, setPreciseAllowed] = useState<boolean>(true);
-  const [batteryPct, setBatteryPct] = useState<number | null>(null);
-  const [reqElapsedMs, setReqElapsedMs] = useState<number | null>(null);
-  const [lastMocked, setLastMocked] = useState<boolean | null>(null);
-
-  const [dwellStartAt, setDwellStartAt] = useState<number | null>(null);
-  const [dwellElapsedMs, setDwellElapsedMs] = useState<number>(0);
-
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // refs for heartbeat without stale closure
-  const eventRef = useRef<EventRow | null>(null);
-  const guestRef = useRef<string | null>(null);
-  const lastBeatAtRef = useRef<number>(0);
-
-  const showError = (msg: string) =>
-    Platform.OS === "android" ? ToastAndroid.show(msg, ToastAndroid.SHORT) : Alert.alert("Error", msg);
-  const showSuccess = (msg: string) =>
-    Platform.OS === "android" ? ToastAndroid.show(msg, ToastAndroid.SHORT) : Alert.alert("Success", msg);
 
   useEffect(() => {
-    (async () => {
-      if (!id) return;
-      const { data, error } = await supabase
-        .from("events")
-        .select("id,title,start_utc,end_utc,lat,lng,radius_m,window_minutes,location_name")
-        .eq("id", id)
-        .single();
-      if (error) setError(error.message);
-      else setEvent(data as EventRow);
-      const g = await getGuestId();
-      setGuestId(g);
-    })();
-  }, [id]);
-
-  useEffect(() => {
-    eventRef.current = event;
-  }, [event]);
-
-  useEffect(() => {
-    guestRef.current = guestId;
-  }, [guestId]);
-
-  useEffect(() => {
-    return () => {
-      try {
-        watcher.current?.remove();
-      } catch {}
-      watcher.current = null;
-      if (retryTimerRef.current) {
-        clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  const getCurrentPermission = async () => (await Location.getForegroundPermissionsAsync()).status;
-  const requestPermission = async () => (await Location.requestForegroundPermissionsAsync()).status;
-
-  const heartbeatIfEligible = async (lat: number | null, lng: number | null, acc: number | null) => {
-    const e = eventRef.current;
-    const uid = guestRef.current;
-    if (!e || !uid || lat == null || lng == null) return;
-    const now = Date.now();
-    if (now - lastBeatAtRef.current < HEARTBEAT_MS) return;
-
-    const withinWindow = isWithinWindow(now, e.start_utc, e.end_utc, e.window_minutes);
-    const dist = haversineMeters(lat, lng, e.lat, e.lng);
-    const withinRadius = dist <= e.radius_m;
-    const accGate = Platform.OS === "web" ? true : acc != null && acc <= accuracyThreshold(e.radius_m ?? 50);
-
-    if (withinWindow && withinRadius && accGate) {
-      lastBeatAtRef.current = now;
-      try {
-        await supabase
-          .from("attendance")
-          .update({ last_valid_seen_utc: new Date().toISOString() })
-          .eq("event_id", e.id)
-          .eq("user_id", uid);
-      } catch {}
-    }
-  };
-
-  const startWatch = async () => {
-    try {
-      setError(null);
-      if (Platform.OS !== "web") {
-        const status = await getCurrentPermission();
-        if (status !== "granted" && (await requestPermission()) !== "granted") {
-          setError("Location permission is required.");
-          return;
-        }
-      }
-      await checkPrecise();
-      if (Platform.OS === "android" && !(await Location.hasServicesEnabledAsync())) {
-        setError("Please enable device location (GPS) and try again.");
-        return;
-      }
-      const __t0 = Date.now();
-      watcher.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: WATCH_TIME_MS,
-          distanceInterval: WATCH_DIST_M,
-          mayShowUserSettingsDialog: true,
-        },
-        (pos) => {
-          setReqElapsedMs(Date.now() - __t0);
-          setLastMocked((pos as any)?.mocked ?? null);
-          const c = {
-            lat: pos.coords.latitude ?? null,
-            lng: pos.coords.longitude ?? null,
-            acc: pos.coords.accuracy ?? null,
-          };
-          setCoords(c);
-          // heartbeat while in-range
-          heartbeatIfEligible(c.lat, c.lng, c.acc);
-        }
-      );
-    } catch (e: any) {
-      setError(e?.message ?? "Failed to start watcher.");
-    }
-  };
-
-  const stopWatch = () => {
-    try {
-      watcher.current?.remove();
-      watcher.current = null;
-    } catch {}
-  };
-
-  useEffect(() => {
-    startWatch();
-    return () => stopWatch();
-  }, [id]);
-
-  useEffect(() => {
+    if (!eid) return;
     (async () => {
       try {
-        const level = await Battery.getBatteryLevelAsync();
-        if (level != null) setBatteryPct(Math.round(level * 100));
-      } catch {}
+        setLoading(true);
+        setError(null);
+        const { data, error } = await supabase
+          .from("events")
+          .select(
+            "id,title,start_utc,end_utc,venue_lat:lat,venue_lng:lng,venue_radius_m:radius_m,location_name"
+          )
+          .eq("id", eid)
+          .maybeSingle();
+        if (error) throw error;
+        setEventRow((data as unknown as EventRow) ?? null);
+      } catch (e: any) {
+        setError(e?.message ?? "Failed to load event");
+      } finally {
+        setLoading(false);
+      }
     })();
-  }, []);
+  }, [eid]);
 
-  const checkPrecise = async () => {
-    if (Platform.OS !== "android") return;
-    try {
-      const p = await Location.getForegroundPermissionsAsync();
-      // @ts-ignore
-      setPreciseAllowed(!!(p?.android?.isPrecise ?? true));
-    } catch {}
-  };
+  // --- 主催者向け操作 ---
+  const openGoogleMaps = useCallback(() => {
+    if (!eventRow?.venue_lat || !eventRow?.venue_lng) return;
+    const name = eventRow.location_name?.trim();
+    const q = name
+      ? `${name} @ ${eventRow.venue_lat},${eventRow.venue_lng}`
+      : `${eventRow.venue_lat},${eventRow.venue_lng}`;
+    Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(q)}`);
+  }, [eventRow]);
 
-  const computeEligible = (c: Coords) => {
-    if (!event || c.lat == null || c.lng == null) return false;
-    const withinWindow = isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes);
-    if (!withinWindow) return false;
-    const dist = haversineMeters(c.lat, c.lng, event.lat, event.lng);
-    const withinRadius = dist <= event.radius_m;
-    const accGate = Platform.OS === "web" ? true : c.acc != null && c.acc <= accuracyThreshold(event.radius_m ?? 50);
-    return withinWindow && withinRadius && accGate;
-  };
-
-  useEffect(() => {
-    const eligibleNow = computeEligible(coords);
-    if (eligibleNow) {
-      if (dwellStartAt == null) setDwellStartAt(Date.now());
-    } else {
-      setDwellStartAt(null);
-      setDwellElapsedMs(0);
-    }
-    let t: any = null;
-    if (eligibleNow) {
-      t = setInterval(() => {
-        setDwellElapsedMs(() => {
-          if (dwellStartAt == null) return 0;
-          return Date.now() - dwellStartAt;
-        });
-      }, 500);
-    }
-    return () => {
-      if (t) clearInterval(t);
-    };
-  }, [coords, event, dwellStartAt]);
-
-  const eligible = useMemo(() => computeEligible(coords), [coords, event]);
-
-  const distanceM = useMemo(() => {
-    if (!event || coords.lat == null || coords.lng == null) return null;
-    return haversineMeters(coords.lat, coords.lng, event.lat, event.lng);
-  }, [coords, event]);
-
-  const acquireHighAcc = async (): Promise<Coords | null> => {
-    try {
-      const pos = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-        mayShowUserSettingsDialog: true,
-      });
-      const fresh: Coords = {
-        lat: pos.coords.latitude ?? null,
-        lng: pos.coords.longitude ?? null,
-        acc: pos.coords.accuracy ?? null,
-      };
-      setCoords(fresh);
-      return fresh;
-    } catch {
-      return null;
-    }
-  };
-
-  const manualRefresh = async () => {
-    const c = await acquireHighAcc();
-    if (!c) {
-      showError("Failed to acquire high accuracy fix.");
-      return;
-    }
-    const dist = c && event && c.lat != null && c.lng != null ? haversineMeters(c.lat, c.lng, event.lat, event.lng) : null;
-    if (dist != null) {
-      if (dist <= (event?.radius_m ?? 0)) showSuccess("High-accuracy fix acquired (inside radius).");
-      else showError(`High-accuracy fix acquired, still out of radius (~${Math.round(dist)} m).`);
-    }
-  };
-
-  // --- submit with 15s retry on network issues ---
-  const isNetworkError = (e: any) => {
-    const msg = String(e?.message || "").toLowerCase();
-    return /fetch|network|timeout|timed out|socket|offline/.test(msg);
-  };
-
-  const submitAttendance = async (
-    row: {
-      event_id: string;
-      user_id: string;
-      checked_in_at_utc: string;
-      lat: number | null;
-      lng: number | null;
-      accuracy_m: number | null;
-      comment: string | null;
-      method: string | null;
-      last_valid_seen_utc: string | null;
-    },
-    isRetry = false
-  ) => {
-    try {
-      const { error } = await supabase.from("attendance").upsert(row);
-      if (error) throw error;
-      showSuccess(isRetry ? "Arrived (retried)!" : "Arrived!");
-      setComment("");
-      setDwellStartAt(null);
-      setDwellElapsedMs(0);
-      // initial heartbeat baseline
-      lastBeatAtRef.current = Date.now();
-    } catch (e: any) {
-      if (!isRetry && isNetworkError(e)) {
-        showError("Network issue. Retrying in 15s…");
-        if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-        retryTimerRef.current = setTimeout(() => {
-          submitAttendance(row, true);
-        }, RETRY_MS);
-      } else {
-        showError(e?.message ?? "Failed to check in.");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const tryCheckIn = async () => {
-    if (!computeEligible(coords)) {
-      showError("Not eligible yet (distance/accuracy/time window).");
-      return;
-    }
-    if (dwellElapsedMs < DWELL_MS) {
-      const remain = Math.ceil((DWELL_MS - dwellElapsedMs) / 1000);
-      showError(`Stay put for ${remain}s more to confirm arrival.`);
-      return;
-    }
-    try {
-      if (!event) return;
-      if (!guestId) {
-        showError("No device id (guest).");
-        return;
-      }
-      if (Platform.OS !== "web") {
-        try {
-          const high = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.High,
-            mayShowUserSettingsDialog: true,
-          });
-          setCoords({
-            lat: high.coords.latitude ?? null,
-            lng: high.coords.longitude ?? null,
-            acc: high.coords.accuracy ?? null,
-          });
-        } catch {}
-      }
-      let current = coords;
-      if (!computeEligible(current)) {
-        const newer = await acquireHighAcc();
-        if (newer) current = newer;
-        if (!computeEligible(current)) {
-          const dist =
-            current.lat != null && current.lng != null && event
-              ? haversineMeters(current.lat, current.lng, event.lat, event.lng)
-              : null;
-          const thr = accuracyThreshold(event.radius_m ?? 50);
-          if (!isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes)) {
-            showError("Outside event time window.");
-          } else if (dist != null && event && dist > event.radius_m) {
-            showError(`Out of radius (${Math.round(dist)} m > ${event.radius_m} m). Try moving outdoors.`);
-          } else if (current.acc != null && current.acc > thr) {
-            showError(`Low accuracy (±${Math.round(current.acc)} m > ±${thr} m). Try QR fallback or move outside.`);
-          } else {
-            showError("Not eligible to check in yet.");
-          }
-          return;
-        }
-      }
-      if (!preciseAllowed) {
-        showError("Precise location is OFF. Please enable it in Settings.");
-        return;
-      }
-      setSubmitting(true);
-      const nowIso = new Date().toISOString();
-      const row = {
-        event_id: event.id,
-        user_id: guestId!,
-        checked_in_at_utc: nowIso,
-        lat: current.lat,
-        lng: current.lng,
-        accuracy_m: current.acc,
-        comment: comment || null,
-        method: "gps",
-        last_valid_seen_utc: nowIso,
-      };
-      await submitAttendance(row, false);
-    } catch (e: any) {
-      showError(e?.message ?? "Failed to check in.");
-      setSubmitting(false);
-    }
-  };
-
-  if (!id) {
+  if (role === "attendee") {
+    // すでに replace を掛けているので、ここは一瞬だけ
     return (
-      <View style={styles.container}>
-        <Text style={styles.title}>Invalid event id.</Text>
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 8 }}>Redirecting to attendee view…</Text>
       </View>
     );
   }
 
-  if (!event) {
+  if (loading) {
+    return (
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+
+  if (error) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>Loading...</Text>
+        <Text style={styles.h1}>Event</Text>
+        <View style={styles.bannerError}>
+          <Text style={styles.bannerText}>Error: {error}</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (!eventRow) {
+    return (
+      <View style={styles.container}>
+        <Text style={styles.h1}>Event</Text>
+        <View style={styles.bannerError}>
+          <Text style={styles.bannerText}>Event not found.</Text>
+        </View>
       </View>
     );
   }
 
   return (
-    <ScrollView style={styles.container} keyboardShouldPersistTaps="handled">
-      <Text style={styles.title}>{event.title ?? "Event"}</Text>
+    <View style={styles.container}>
+      <Text style={styles.h1}>{eventRow.title ?? "(Untitled event)"}</Text>
 
-      {error ? (
-        <View style={styles.alertBox}>
-          <Text style={styles.alertText}>{error}</Text>
-          <Button title="Open Settings" onPress={() => Linking.openSettings()} />
-        </View>
-      ) : null}
-
-      {__DEV__ ? (
-        <View style={styles.debugBox}>
-          <Text style={styles.debugText}>
-            acc(m): {coords.acc ?? "—"} | req(ms): {reqElapsedMs ?? "—"} | battery(%): {batteryPct ?? "—"} | precise:{" "}
-            {String(preciseAllowed)} | mocked: {String(lastMocked)}
-          </Text>
-          <View style={{ marginTop: 8 }}>
-            <Button title="Refresh GPS (High acc)" onPress={manualRefresh} />
-          </View>
-        </View>
-      ) : null}
-
-      <View style={styles.block}>
-        <Text style={styles.section}>Your position</Text>
-        <Text style={styles.kv}>
-          Lat/Lng: {coords.lat ?? "—"} , {coords.lng ?? "—"}
-        </Text>
-        <Text style={styles.kv}>
-          Distance: {distanceM == null ? "—" : `${distanceM} m`} | Accuracy:{" "}
-          {coords.acc == null ? "—" : `±${Math.round(coords.acc)} m`}
-        </Text>
-        <Text style={styles.kv}>
-          Window: {isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes) ? "OK" : "Closed"}
-        </Text>
-        <Text style={styles.kv}>
-          Dwell:{" "}
-          {eligible
-            ? `${Math.min(Math.floor(dwellElapsedMs / 1000), Math.floor(DWELL_MS / 1000))} / ${Math.floor(
-                DWELL_MS / 1000
-              )} s`
-            : "—"}
-        </Text>
-        <Text style={[styles.badge, eligible ? styles.ok : styles.ng]}>
-          {eligible ? "In-range" : "Not ready"}
-        </Text>
-        {!eligible ? (
-          <Text style={styles.reason}>
-            {(() => {
-              if (!isWithinWindow(Date.now(), event.start_utc, event.end_utc, event.window_minutes))
-                return "Outside event time window";
-              const dist = distanceM == null ? null : distanceM;
-              if (dist != null && event && dist > event.radius_m)
-                return `Out of radius (${Math.round(dist)}m > ${event.radius_m}m)`;
-              if (Platform.OS !== "web" && coords.acc != null && event) {
-                const thr = accuracyThreshold(event.radius_m ?? 50);
-                if (coords.acc > thr) return `Low accuracy (±${Math.round(coords.acc)}m > ${thr}m)`;
-              }
-              if (!preciseAllowed) return "Precise location is OFF";
-              return "Not eligible yet";
-            })()}
-          </Text>
-        ) : null}
-      </View>
-
-      <View style={styles.block}>
-        <Text style={styles.section}>Comment (optional)</Text>
-        <TextInput value={comment} onChangeText={setComment} placeholder='e.g. "Here now"' maxLength={150} style={styles.input} />
-      </View>
-
-      <AttendeeOnly>
-        <Button
-          title={
-            submitting
-              ? "Checking in…"
-              : eligible
-              ? dwellElapsedMs >= DWELL_MS
-                ? "Arrive"
-                : `Arrive in ${Math.ceil((DWELL_MS - dwellElapsedMs) / 1000)}s`
-              : "Check in"
+      <View style={styles.card}>
+        <Row label="Start (UTC)" value={eventRow.start_utc ?? "—"} />
+        <Row label="End (UTC)" value={eventRow.end_utc ?? "—"} />
+        <Row label="Venue" value={eventRow.location_name || "—"} />
+        <Row
+          label="Lat/Lng"
+          value={
+            eventRow.venue_lat != null && eventRow.venue_lng != null
+              ? `${eventRow.venue_lat.toFixed(6)}, ${eventRow.venue_lng.toFixed(6)}`
+              : "—"
           }
-          onPress={tryCheckIn}
-          disabled={!preciseAllowed || submitting || !eligible || dwellElapsedMs < DWELL_MS}
         />
-        <View style={{ height: 8 }} />
-        <Button title="Show my QR" onPress={() => router.push(`/organize/events/${id}/qr`)} />
-      </AttendeeOnly>
-
-      <View style={{ height: 8 }} />
-      <Button title="Scan QR (Organizer)" onPress={() => router.push(`/organize/events/${id}/scan`)} />
-
-      <View style={styles.block}>
-        <Text style={styles.section}>Venue</Text>
-        <Text style={styles.kv}>
-          {event.location_name ? `${event.location_name} • ` : null}
-          {event.lat}, {event.lng} • radius {event.radius_m} m
-        </Text>
-        <View style={{ marginTop: 6 }}>
-          <Button
-            title="Open in Google Maps"
-            onPress={() => Linking.openURL(`https://maps.google.com/?q=${event.lat},${event.lng}`)}
-          />
-        </View>
+        <Row label="Radius (m)" value={String(eventRow.venue_radius_m ?? "—")} />
       </View>
 
-      <View style={{ height: 20 }} />
-    </ScrollView>
+      <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
+        <TouchableOpacity
+          style={[styles.btnPrimary, { flex: 1 }]}
+          onPress={() => router.push(`/organize/events/${eventRow.id}/live`)}
+        >
+          <Text style={styles.btnText}>LIVE (ORGANIZER)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.btnPrimary, { flex: 1 }]}
+          onPress={() => router.push(`/organize/events/${eventRow.id}/scan`)}
+        >
+          <Text style={styles.btnText}>SCAN QR (ORGANIZER)</Text>
+        </TouchableOpacity>
+      </View>
+
+      {eventRow.venue_lat != null && eventRow.venue_lng != null ? (
+        <View style={{ marginTop: 10 }}>
+          <TouchableOpacity style={[styles.btnOutline]} onPress={openGoogleMaps}>
+            <Text style={styles.btnOutlineText}>OPEN IN GOOGLE MAPS</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.row}>
+      <Text style={styles.rowLabel}>{label}</Text>
+      <Text style={styles.rowValue}>{value}</Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flexGrow: 1, padding: 16, gap: 12, backgroundColor: "#fff" },
-  title: { fontSize: 20, fontWeight: "800", marginBottom: 6 },
+  container: { flex: 1, padding: 16, backgroundColor: "#fff" },
+  h1: { fontSize: 20, fontWeight: "800", marginBottom: 12 },
 
-  section: { fontSize: 16, fontWeight: "700", marginBottom: 6 },
-  block: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: "#eee" },
-  kv: { color: "#444", marginTop: 2 },
-
-  badge: {
-    alignSelf: "flex-start",
-    marginTop: 8,
-    paddingVertical: 2,
-    paddingHorizontal: 8,
-    borderRadius: 999,
-    fontSize: 12,
-    fontWeight: "800",
-    overflow: "hidden",
-    color: "white",
-  },
-  ok: { backgroundColor: "#10B981" },
-  ng: { backgroundColor: "#6B7280" },
-
-  input: { borderWidth: 1, borderColor: "#ddd", padding: 10, borderRadius: 8, marginTop: 6 },
-
-  alertBox: {
-    backgroundColor: "#FFF7ED",
-    borderColor: "#FDBA74",
+  bannerError: {
+    backgroundColor: "#FFEAEA",
+    borderColor: "#FF8A8A",
     borderWidth: 1,
     padding: 12,
     borderRadius: 10,
-    marginTop: 8,
-    gap: 8,
+    marginBottom: 12,
   },
-  alertText: { color: "#9A3412", fontWeight: "600" },
+  bannerText: { color: "#B00020" },
 
-  debugBox: { backgroundColor: "#111827", padding: 8, borderRadius: 8, marginTop: 8 },
-  debugText: { color: "white", fontSize: 12 },
+  card: {
+    borderWidth: 1,
+    borderColor: CARD_BORDER,
+    borderRadius: 12,
+    backgroundColor: "white",
+    padding: 12,
+    marginBottom: 14,
+  },
 
-  reason: { color: "#6B7280", marginTop: 6 },
+  row: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 6,
+  },
+  rowLabel: { color: "#6B7280", fontSize: 13, fontWeight: "600" },
+  rowValue: { color: "#111827", fontWeight: "700" },
+
+  btnPrimary: {
+    backgroundColor: BLUE,
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  btnText: { color: "white", fontWeight: "700" },
+
+  btnOutline: {
+    borderWidth: 2,
+    borderColor: BLUE,
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  btnOutlineText: { color: BLUE, fontWeight: "700" },
 });

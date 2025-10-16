@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.anonymous.rtazero",
+      "bundleIdentifier": "com.kenta0015.geoattendance.internal",
       "infoPlist": {
         "UIBackgroundModes": [
           "location",
@@ -24,16 +24,20 @@
         "NSLocationWhenInUseUsageDescription": "We use your location to verify on-site attendance.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "We use your location in the background to detect venue entry and exit.",
         "NSLocationAlwaysUsageDescription": "We use your location in the background to detect venue entry and exit."
-      }
+      },
+      "buildNumber": "1"
     },
     "android": {
-      "package": "com.anonymous.rtazero",
+      "package": "com.kenta0015.geoattendance.internal",
+      "versionCode": 1,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
         "ACCESS_BACKGROUND_LOCATION",
         "POST_NOTIFICATIONS",
         "FOREGROUND_SERVICE",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ]
@@ -48,9 +52,16 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "e1c6e861-3cfa-4e4e-a274-1ca512e04afd"
-      }
+        "projectId": "18a62c09-a52c-4ff1-93eb-c86674e29bd9"
+      },
+      "appEnv": "internal"
     },
-    "owner": "kenta0015"
+    "owner": "kenta0015",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/18a62c09-a52c-4ff1-93eb-c86674e29bd9"
+    }
   }
 }
