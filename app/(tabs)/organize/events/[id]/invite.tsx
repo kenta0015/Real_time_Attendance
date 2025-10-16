@@ -87,7 +87,8 @@ export default function InviteScreen() {
     const endsAt =
       row.end_time_utc ?? new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
-    const url = LinkingExpo.createURL(`/events/${eventId}`, { scheme: "rta" });
+    // Unified deep link route
+    const url = LinkingExpo.createURL(`/organize/events/${eventId}`, { scheme: "rta" });
 
     const text = buildICS({
       id: row.id,

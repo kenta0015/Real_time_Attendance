@@ -39,7 +39,7 @@ export default function OrganizeEventDetail() {
     return s && s !== "undefined" ? s : null;
   }, [params.id]);
 
-  // --- dev role (attendee/organizer) を監視 ---
+  // --- dev role (attendee/organizer) watcher ---
   const [role, setRole] = useState<Role>("organizer");
   const loadRole = useCallback(async () => {
     const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
@@ -51,14 +51,14 @@ export default function OrganizeEventDetail() {
     return () => sub.remove();
   }, [loadRole]);
 
-  // --- 参加者は新UIへ即リダイレクト（ここが今回の要） ---
+  // --- attendee: redirect to unified attendee route ---
   useEffect(() => {
     if (role === "attendee" && eid) {
-      router.replace(`/events/${eid}`); // 新しい参加者UIへ統一
+      router.replace(`/organize/events/${eid}`); // unified attendee route
     }
   }, [role, eid]);
 
-  // --- イベント読み込み（主に主催者UI表示用） ---
+  // --- load event (organizer UI) ---
   const [loading, setLoading] = useState(true);
   const [eventRow, setEventRow] = useState<EventRow | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +86,7 @@ export default function OrganizeEventDetail() {
     })();
   }, [eid]);
 
-  // --- 主催者向け操作 ---
+  // --- organizer actions ---
   const openGoogleMaps = useCallback(() => {
     if (!eventRow?.venue_lat || !eventRow?.venue_lng) return;
     const name = eventRow.location_name?.trim();
@@ -97,7 +97,6 @@ export default function OrganizeEventDetail() {
   }, [eventRow]);
 
   if (role === "attendee") {
-    // すでに replace を掛けているので、ここは一瞬だけ
     return (
       <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
         <ActivityIndicator />
