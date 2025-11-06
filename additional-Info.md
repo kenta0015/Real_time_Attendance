@@ -174,105 +174,104 @@ Start-Process "http://localhost:8081/status"
 
 # ロードマップ v2
 
-## A. Dev / JS フェーズ（EAS Update 配信可）
-
-1.初回起動 … done
-
-2.位置/カメラ許可（UI/プロンプト確認まで）… done
-
-3.rta://join 導線 … done
-
-4.1 QR 打刻（JS） … done
-
-5.UI パリティ（History の Active/Upcoming/Past、Live の Total/On-time/Late 等）
-
-手段: Dev で実装 → internal チャンネルに EAS Update
-
-DoD: Android でも数値が描画される／ゼロ件時の表示が定義どおり
-
-6.Organizer 導線（Show Event QR / Live / Rank）
-
-手段: Dev 実装 → EAS Update
-
-DoD: 全ボタンが到達・戻り導線含め正常（Rank の所在も明確化）
-
-備考: 下部タブの“所属/organize グループ”は優先度低（必要なら 5 に含める）
-
-✅ この段階は Manifest を触らない想定。修正は EAS Update で回せます。
-
 ## B. APK / ネイティブ検証フェーズ（今回ここで 4.2 / 4.3 を実装・確認）
 
-4.2 位置打刻（ボタンで GPS 判定） … Dev スキップ → APK で実機検証
+1.最小修正（effectiveUserId 統一）
 
-目的: 現在地の取得 → 判定 → 成功/拒否メッセージ（理由付き）
+参照・書き込み：effectiveUserId = Session UID || Guest ID
 
-DoD:
+適用範囲：イベント作成 created_by、出席 attendance.user_id、History 集計の参照 ID
 
-位置取得エラーのリトライ/メッセージ
+旧 /organize/... 遷移は (tabs) 側へ寄せる（eventId 常時付与）
 
-成功時：履歴反映・UI 更新
+目標：サインイン後、History/Check-in も同一 ID として可視化
 
-拒否時：理由コード（距離超過 / 精度不足 / 権限 NG 等）表示
+2.EAS Update（JS のみ）
 
-4.3 Enter/Exit（ジオフェンス） … Dev は煙テストのみ。実動は APK 必須
+eas update --channel internal -m "unify effectiveUserId"
 
-目的: BG で Enter/Exit を安定検出（“開始時に既に内側”は enter が来ない仕様を前提）
+端末側：アプリ再起動 → 更新適用の確認（ログで effectiveUserId 出力が望ましい）
 
-DoD:
+3.  4.2 位置打刻（APK で）
 
-半径 100–150m で 境界を跨ぐと queue が増加
+成功/拒否の理由表示（距離/精度/権限）
 
-停止/再開・再登録でも安定
+DoD：押下 → トースト/アラート → 履歴に反映（同一 ID で画面にも反映）
 
-Mock Location でも再現可（動けないときの代替）
+4.  4.3 Enter/Exit（APK で）
 
-7.Crashlytics 動作（BG Enter/Exit 含むスタック・非致命ログ確認）
+半径 100–150m、境界跨ぎで queue 増加・再登録後も安定
 
-目的: クラッシュ収集とキーログ（イベント到達／失敗理由）
+前提：ACCESS_BACKGROUND_LOCATION、FOREGROUND_SERVICE_LOCATION、通知許可、電池最適化「制限なし」
 
-DoD: テストクラッシュ送信確認・Enter/Exit 付近のログがダッシュボードに載る
+5.最小修正の残り（整合仕上げ）
 
-8.英 UI/時差/端末差 最終確認（Pixel/Galaxy 実機で APK）
+旧ルートの完全整理、router.push/replace の統一
 
-9.データ・セーフティ整合（AAB/Play Console で最終確認）
+ゲスト既存データのバックフィル（必要範囲のみ）
 
-### 🔧 APK 事前チェック（4.2/4.3/7 の前提）
+6.Crashlytics
 
-ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION / ACCESS_BACKGROUND_LOCATION
+テストクラッシュ送信、Enter/Exit 付近の非致命ログ確認
 
-FOREGROUND_SERVICE_LOCATION（Android 14+ で必須。FOREGROUND_SERVICE だけでは不足）
+7.英 UI/時差/端末差 最終確認
 
-通知許可（必要に応じて）
+Australia/Melbourne（UTC+11）で時刻表示の整合
 
-バッテリー最適化：端末側で Unrestricted（制限なし）
+Pixel/Galaxy 実機で文言/改行/遅延の差異
 
-位置：常に許可 + Precise ON、位置精度 ON（Wi-Fi/Bluetooth スキャン）
+8.データ・セーフティ整合（AAB/Play Console）
 
-## 実務運用の順番（更新版）
+パーミッション申告・バックグラウンド位置の用途説明・ポリシー最終確認
 
-1.A フェーズ完了：5/6 を Dev→EAS Update で“緑”にする
+9.Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）
 
-2.APK 作成：Manifest 系そろえてビルド（versionCode++ は AAB 向け時）
+# ① どの画面が Session / Guest を参照しているか
 
-3.B フェーズ実機検証：
+| 画面 / ルート                             | 役割                                       | 参照 ID                                                             | 根拠（主なファイル）                                                                                                |
+| ----------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **/join**                                 | サインイン／トークン Join                  | **Session**（`supabase.auth.user.id`）※DEV トークン書き換え時に使用 | `app/join.tsx`（`supabase.auth.signIn…`, `waitForSessionUserId`）                                                   |
+| **/(tabs)/events**（タブ「History」）     | 履歴一覧（作成/参加の集約）                | **Guest**（端末ローカルの擬似 UID）                                 | `app/(tabs)/events.tsx` → `screens/EventsList.tsx`（`getGuestId()`, `getGuestIdShort()`）                           |
+| **/(tabs)/organize**（タブ「Organize」）  | イベント作成＆最近のイベント表示           | **Guest**（作成者 `created_by` に使用）                             | `app/(tabs)/organize/index.tsx`（`createdBy = await getGuestId()` → `createEvent({ p_created_by: createdBy, … })`） |
+| **/(tabs)/organize/events/[id]**          | イベント詳細（参加者側のチェックイン含む） | **Guest**（出席 `attendance` 挿入時の `user_id`）                   | `app/(tabs)/organize/events/[id].tsx`（`user_id: await getGuestId()`）                                              |
+| **/(tabs)/organize/events/[id]/checkin**  | 主催者のチェックインリスト                 | **ID 不要**（ユーザー ID は使わず、eventId で集計）                 | `app/(tabs)/organize/events/[id]/checkin.tsx`（eventId ベースの一覧・集計）                                         |
+| **/(tabs)/organize/events/[id]/invite**   | 招待用情報                                 | **ID 不要**（eventId のみ）                                         | `app/(tabs)/organize/events/[id]/invite.tsx`                                                                        |
+| **/(tabs)/organize/events/[id]/settings** | イベント設定                               | **ID 不要**（eventId のみ）                                         | `app/(tabs)/organize/events/[id]/settings.tsx`                                                                      |
+| **/(tabs)/organize/admin/[eventId]/live** | Live 管理（リダイレクト）                  | **ID 不要**（eventId のみ）                                         | `app/(tabs)/organize/admin/[eventId]/live.tsx`（`/organize/events/${eventId}/live` へリダイレクト）                 |
+| **/(tabs)/profile**                       | 現在ロール／Guest ID 表示                  | **Guest**（表示＆トグル）                                           | `app/(tabs)/profile/index.tsx`（`useRoleStore`, `getGuestId` の表示）                                               |
+| **/(tabs)/debug**                         | セッション/環境の可視化                    | **Session**（表示）※動作は ID 非依存                                | `app/(tabs)/debug.tsx`（`supabase.auth.getSession()` 表示）                                                         |
 
-     4.2（GPS ボタン） → 4.3（Enter/Exit） → 7（Crashlytics） → 8 → 9
+参考：Guest ID の実体は stores/session.ts のローカル永続（AsyncStorage）で、Supabase の Session UID とは独立です。
 
-     JS 微修正は都度 EAS Update で反映、Manifest 変更は再ビルド
+併存ルート：/app/organize/... や /app/events/[id].tsx などタブ外の旧ルートも残っています（例：app/organize/events/[id]/scan.tsx は Guest で出席登録）。通常運用は (tabs) 配下に統一されているため、ディープリンクは (tabs) 側へ合わせるのが安全です。以前の警告「No route named …/qr」はこの二系統併存が原因です。
 
-# Enter/Exit テストと APK の必要性
+# eventId が必須の画面
 
-結論：バックグラウンドの Enter/Exit 信頼性は APK（または AAB）で検証すべき。
+必須（eventId に完全依存）
 
-Dev Client/デバッグは OS の省電力・プロセス回収でタスク登録が不安定になりがち。
+/(tabs)/organize/events/[id]
 
-Expo Location の Geofencing（TaskManager）は終了中も動作しますが、Android では下記が前提：
+/(tabs)/organize/events/[id]/checkin
 
-ACCESS_FINE_LOCATION と ACCESS_BACKGROUND_LOCATION が許可済み
+/(tabs)/organize/events/[id]/invite
 
-端末側でアプリを「電池の最適化から除外」
+/(tabs)/organize/events/[id]/settings
 
-位置精度は「正確な位置」を ON
+/(tabs)/organize/admin/[eventId]/live（= [id]/live へ転送）
+
+旧ルート群：/organize/events/[id]/scan など
+
+不要（eventId なしで成立）
+
+/join（サインイン／DEV トークン再署名時のみ Session を使用）
+
+/(tabs)/events（History：Guest で自分の「作成/参加」から集計）
+
+/(tabs)/organize（作成時に Guest を created_by へ）
+
+/(tabs)/profile（表示のみ）
+
+/(tabs)/debug（表示のみ）
 
 #　違うイベントの QR でもログインできてしまう問題
 
@@ -305,3 +304,95 @@ $id = "6252e880-30c7-41e5-95c2-b1cad25de83f" # 対象イベント ID
 
 <event id>
 6252e880-30c7-41e5-95c2-b1cad25de83f
+
+## サインイン画面を出現させる方法
+
+方式 A：アプリのデータを消去して起動（推奨）
+
+Expo Go で確認する場合
+
+Android 設定 → アプリ → Expo Go → 「ストレージとキャッシュ」
+
+ストレージを消去（= AsyncStorage が空になる → セッション消滅）
+
+PC で npx expo start -c（キャッシュもクリア）→ 端末で新 QR を読み込む
+
+/join が出続けるので、画面の Session 行が “Not signed in” であることを確認
+
+インストール済み APK で確認する場合
+
+Android 設定 → アプリ → GeoAttendance（あなたの APK 名） → 「ストレージとキャッシュ」
+
+ストレージを消去
+
+アプリを起動 → /join が出続ける → Session 行を確認
+
+# /organize と /events を単一 EventDetail へ共通化
+
+目的
+重複した実装を排除し、修正を一箇所で完結。URL は現状維持（参加者 /events/[id]、主催者 /organize/events/[id]）。
+
+構成
+
+components/event/EventDetail.tsx：単一の本体（取得・RSVP・GPS/QR・ロール別ボタン・開発メトリクス）。
+
+ラッパ：
+
+app/(tabs)/events/[id].tsx → role="attendee" で EventDetail を描画
+
+app/(tabs)/organize/events/[id].tsx → role を渡して EventDetail を描画
+
+EventDetail の責務
+
+イベント取得（alias 統一：venue_lat:lat, venue_lng:lng, venue_radius_m:radius_m 等）
+
+RSVP 読み/保存（event_members.upsert）
+
+出席登録（attendance へ GPS/QR 挿入）
+
+ロール別 UI：
+
+参加者：RSVP / GPS チェックイン / スキャナ / Google Maps
+
+主催者：スキャナ / Check-in List / Invite / Settings / Google Maps
+
+getEffectiveUserId() でユーザー ID 統一
+
+可視性ルール（ボタン欠落の再発防止）
+
+role 明示チェックで条件出し分け。
+
+必須ボタンはマウント固定（レイアウトずれで消えない）。
+
+移行ステップ（小さく安全に）
+
+既存本体を EventDetail.tsx に抽出（見た目不変）。
+
+/organize/.../[id].tsx を EventDetail 利用に置き換え検証。
+
+/events/[id].tsx を薄いラッパ化（role="attendee"）。
+
+共有フックやヘルパは後追いで分離（任意）。
+
+受け入れチェック（最小）
+
+参加者 URL：RSVP/GPS/Scanner/Maps が表示・動作。
+
+主催者 URL：Scanner/Check-in List/Invite/Settings/Maps が表示・動作。
+
+GPS/QR 後に「Checked-in」ピルが即反映。
+
+エイリアス不整合なし・未定義なし。
+
+OTA（EAS Update）で両 URL 同時に反映。
+
+既知の落とし穴（再発防止メモ）
+
+checked_in_at_utc は DEFAULT now()（既存は埋めてから NOT NULL 化）。
+
+Dev 端末は必ず getEffectiveUserId() を使う（auth→guest フォールバック）。
+
+QR は EXPO_PUBLIC_QR_SECRET と currentSlot を共通で。
+
+ロールバック
+緊急時は /events/[id].tsx を一時的に /organize/events/[id] へ router.replace()。

@@ -18,7 +18,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import { supabase } from "../../../lib/supabase";
-import { getGuestId } from "../../../stores/session";
+import { getEffectiveUserId } from "../../../stores/session";
 
 // Common UI
 import Card from "../../ui/Card";
@@ -50,6 +50,7 @@ export default function EventsListScreen() {
   const router = useRouter();
 
   const [role, setRole] = useState<Role>("organizer");
+  // NOTE: This holds the EFFECTIVE user id (session user if signed in, otherwise stable guest id)
   const [guestId, setGuestId] = useState<string>("");
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -65,16 +66,16 @@ export default function EventsListScreen() {
   const readRoleAndGuest = useCallback(async (): Promise<{ role: Role; guestId: string }> => {
     const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
     const r: Role = v === "attendee" ? "attendee" : "organizer";
-    const gid = await getGuestId();
-    console.log("[EventsList] guestIdFull =", gid);
-    console.log("[EventsList] readRoleAndGuest ->", { role: r, guestIdShort: gid?.slice(0, 6) });
+    const gid = await getEffectiveUserId();
+    console.log("[EventsList] effectiveIdFull =", gid);
+    console.log("[EventsList] readRoleAndGuest ->", { role: r, effectiveIdShort: gid?.slice(0, 6) });
     return { role: r, guestId: gid };
   }, []);
 
   const fetchEventsFor = useCallback(async (gid: string, r: Role) => {
-    console.log("[EventsList] fetchEventsFor start", { role: r, guestIdShort: gid?.slice(0, 6) });
+    console.log("[EventsList] fetchEventsFor start", { role: r, effectiveIdShort: gid?.slice(0, 6) });
 
-    // 1) attendance -> event_ids (this device)
+    // 1) attendance -> event_ids (for this effective user)
     const att = await supabase
       .from("attendance")
       .select("event_id")
@@ -264,8 +265,8 @@ export default function EventsListScreen() {
 
       <Text style={styles.hint}>
         {role === "organizer"
-          ? "History shows events you created on this device and events you checked into."
-          : "History shows events this device checked into."}
+          ? "History shows events you created (as the current account) and events you checked into."
+          : "History shows events this user checked into."}
       </Text>
 
       {section("ACTIVE", active, "success", role, router)}

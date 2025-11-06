@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
   Linking,
 } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, router } from "expo-router";
 import { supabase } from "../../lib/supabase";
 
 type EventRow = {
@@ -68,6 +68,10 @@ export default function AttendeeEventDetail() {
     Linking.openURL(`https://maps.google.com/?q=${encodeURIComponent(q)}`);
   }, [eventRow]);
 
+  const openScanner = useCallback(() => {
+    router.push({ pathname: "/attend/scan", params: eid ? { id: eid } : {} });
+  }, [eid]);
+
   if (!eid) {
     return (
       <View style={[styles.container, styles.center]}>
@@ -125,13 +129,17 @@ export default function AttendeeEventDetail() {
         <Row label="Radius (m)" value={String(eventRow.venue_radius_m ?? "—")} />
       </View>
 
-      {eventRow.venue_lat != null && eventRow.venue_lng != null ? (
-        <View style={{ marginTop: 10 }}>
+      <View style={{ gap: 10 }}>
+        {eventRow.venue_lat != null && eventRow.venue_lng != null ? (
           <TouchableOpacity style={[styles.btnOutline]} onPress={openGoogleMaps}>
             <Text style={styles.btnOutlineText}>OPEN IN GOOGLE MAPS</Text>
           </TouchableOpacity>
-        </View>
-      ) : null}
+        ) : null}
+
+        <TouchableOpacity style={[styles.btnOutline]} onPress={openScanner}>
+          <Text style={styles.btnOutlineText}>OPEN SCANNER</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
