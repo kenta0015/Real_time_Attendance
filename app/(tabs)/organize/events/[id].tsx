@@ -18,8 +18,6 @@ import { supabase } from "../../../../lib/supabase";
 import { haversineMeters, accuracyThreshold } from "../../../../lib/geo";
 import { getGuestId } from "../../../../stores/session";
 
-import { RSVP } from "../../../../lib/types";
-
 type Role = "organizer" | "attendee";
 const ROLE_KEY = "rta_dev_role";
 
@@ -46,6 +44,15 @@ function Row({ label, value }: { label: string; value: string }) {
       <Text style={styles.rowValue}>{value}</Text>
     </View>
   );
+}
+
+async function getEffectiveUserId(): Promise<string> {
+  try {
+    const { data } = await supabase.auth.getUser();
+    const uid = data?.user?.id;
+    if (uid && uid.length > 0) return uid;
+  } catch {}
+  return await getGuestId();
 }
 
 export default function OrganizeEventDetail() {
@@ -100,7 +107,9 @@ export default function OrganizeEventDetail() {
       try {
         const { data, error } = await supabase
           .from("events")
-          .select("id,title,start_utc,end_utc,venue_lat,venue_lng,venue_radius_m,location_name")
+          .select(
+            "id,title,start_utc,end_utc,venue_lat:lat,venue_lng:lng,venue_radius_m:radius_m,location_name"
+          )
           .eq("id", eid)
           .maybeSingle();
 
@@ -122,7 +131,7 @@ export default function OrganizeEventDetail() {
   const loadRsvp = useCallback(async () => {
     if (!eid) return;
     try {
-      const userId = await getGuestId();
+      const userId = await getEffectiveUserId();
       const { data, error } = await supabase
         .from("event_members")
         .select("rsvp_status")
@@ -150,7 +159,7 @@ export default function OrganizeEventDetail() {
       try {
         setRsvpBusy(true);
         setRsvp(next); // optimistic
-        const userId = await getGuestId();
+        const userId = await getEffectiveUserId();
         const { error } = await supabase
           .from("event_members")
           .upsert(
@@ -221,7 +230,7 @@ export default function OrganizeEventDetail() {
       }
 
       // insert attendance
-      const userId = await getGuestId();
+      const userId = await getEffectiveUserId();
       const { error } = await supabase.from("attendance").insert({
         event_id: eventRow.id,
         user_id: userId,
@@ -386,6 +395,22 @@ export default function OrganizeEventDetail() {
             onPress={() => router.push(`/organize/events/${eventRow.id}/checkin` as any)}
           >
             <Text style={styles.btnOutlineText}>OPEN CHECK-IN LIST</Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 10 }} />
+          <TouchableOpacity
+            style={[styles.btnOutline]}
+            onPress={() => router.push(`/organize/events/${eventRow.id}/scan` as any)}
+          >
+            <Text style={styles.btnOutlineText}>OPEN SCANNER</Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 10 }} />
+          <TouchableOpacity
+            style={[styles.btnOutline]}
+            onPress={() => router.push(`/organize/events/${eventRow.id}/qr` as any)}
+          >
+            <Text style={styles.btnOutlineText}>SHOW EVENT QR</Text>
           </TouchableOpacity>
 
           <View style={{ height: 10 }} />

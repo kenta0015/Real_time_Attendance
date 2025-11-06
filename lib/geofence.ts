@@ -239,7 +239,3 @@ export async function stopGeofencing(): Promise<void> {
     if (started) await Location.stopGeofencingAsync(GEOFENCE_TASK);
   } catch {}
 }
-
-
-
-

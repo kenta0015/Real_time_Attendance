@@ -13,6 +13,8 @@ type TokenParts = {
   hash: string;
 };
 
+const AFTER_LOGIN_PATH = "/(tabs)/events";
+
 function parseToken(raw?: string | null): TokenParts | null {
   if (!raw) return null;
   const parts = String(raw).split("|");
@@ -95,6 +97,7 @@ export default function JoinScreen() {
   const [password, setPassword] = useState("");
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [didAutoNav, setDidAutoNav] = useState(false);
 
   // Load session + subscribe auth state
   useEffect(() => {
@@ -171,6 +174,10 @@ export default function JoinScreen() {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
       Alert.alert("Signed in", "You are now signed in.");
+      // Navigate after successful sign-in (no token join)
+      if (!tokenInUrl) {
+        router.replace(AFTER_LOGIN_PATH);
+      }
     } catch (e: any) {
       Alert.alert("Sign in failed", e?.message ?? String(e));
     } finally {
@@ -225,6 +232,14 @@ export default function JoinScreen() {
   function joinWithToken() {
     processJoinWithToken("url");
   }
+
+  // Auto-redirect if already signed in (and not handling token join)
+  useEffect(() => {
+    if (!didAutoNav && sessionUserId && !tokenInUrl) {
+      setDidAutoNav(true);
+      router.replace(AFTER_LOGIN_PATH);
+    }
+  }, [sessionUserId, tokenInUrl, didAutoNav, router]);
 
   return (
     <View style={styles.container}>

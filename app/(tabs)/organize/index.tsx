@@ -42,6 +42,15 @@ type EventRow = {
 const nowIso = () => new Date().toISOString();
 const plusHoursIso = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
+async function getEffectiveUserId(): Promise<string> {
+  try {
+    const { data } = await supabase.auth.getUser();
+    const uid = data?.user?.id;
+    if (uid && uid.length > 0) return uid;
+  } catch {}
+  return await getGuestId();
+}
+
 export default function OrganizeIndexScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ gid?: string }>();
@@ -182,7 +191,7 @@ export default function OrganizeIndexScreen() {
     }
     setSubmitting(true);
     try {
-      const createdBy = await getGuestId();
+      const createdBy = await getEffectiveUserId();
       const { data, error } = await supabase.rpc("create_event_safe", {
         p_title: title,
         p_group_id: groupId,
@@ -229,7 +238,6 @@ export default function OrganizeIndexScreen() {
         </View>
       ) : null}
 
-      {/* Create UI — Organizer only */}
       {role === "organizer" ? (
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Create event</Text>
@@ -364,7 +372,6 @@ export default function OrganizeIndexScreen() {
         </View>
       ) : null}
 
-      {/* Recent events list — visible for both roles */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Recent events</Text>
         {events.length === 0 ? (
@@ -525,7 +532,3 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
 });
-
-
-
-

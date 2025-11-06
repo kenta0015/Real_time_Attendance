@@ -13,7 +13,7 @@ import DevRoleBadge from "../components/DevRoleBadge";
 import PermissionsGate from "../components/PermissionsGate";
 import ToastHost from "../components/ToastHost";
 
-export const unstable_settings = { initialRouteName: "(tabs)" };
+export const unstable_settings = { initialRouteName: "join" };
 
 // Ultra-early
 installGlobalLogger();
@@ -74,7 +74,3 @@ export default function RootLayout() {
     </SafeAreaProvider>
   );
 }
-
-
-
-
