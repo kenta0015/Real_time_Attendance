@@ -144,9 +144,7 @@ export default function OrganizeEventDetail() {
         const mapped = raw === "going" ? "going" : raw === "not_going" ? "not_going" : null;
         setRsvp(mapped as RSVPStatus);
       } else setRsvp(null);
-    } catch (e) {
-      // silent
-    }
+    } catch {}
   }, [eid]);
 
   useEffect(() => {
@@ -174,7 +172,6 @@ export default function OrganizeEventDetail() {
         if (error) throw error;
       } catch (e: any) {
         Alert.alert("Failed to save RSVP", e?.message ?? "Unknown error");
-        // reload to recover optimistic state
         loadRsvp();
       } finally {
         setRsvpBusy(false);
@@ -194,7 +191,6 @@ export default function OrganizeEventDetail() {
     }
     setGpsBusy(true);
     try {
-      // permission
       const fg = await Location.requestForegroundPermissionsAsync();
       if (fg.status !== "granted") {
         Alert.alert("Permission needed", "Location permission is required.");
@@ -216,20 +212,17 @@ export default function OrganizeEventDetail() {
       if (acc != null && acc > accThresh) {
         Alert.alert(
           "Location too inaccurate",
-          `Reported accuracy ${Math.round(acc)}m > threshold ${Math.round(
-            accThresh
-          )}m. Move to open area and try again.`
+          `Reported accuracy ${Math.round(acc)}m > threshold ${Math.round(accThresh)}m. Move to open area and try again.`
         );
         setGpsBusy(false);
         return;
       }
       if (distM > radiusM) {
-        Alert.alert("Outside gate", `Distance ${distM}m > radius ${radiusM}m.`);
+        Alert.alert("Outside gate", `Distance ${Math.round(distM)}m > radius ${radiusM}m.`);
         setGpsBusy(false);
         return;
       }
 
-      // insert attendance
       const userId = await getEffectiveUserId();
       const { error } = await supabase.from("attendance").insert({
         event_id: eventRow.id,
@@ -339,9 +332,7 @@ export default function OrganizeEventDetail() {
               onPress={() => saveRsvp("going")}
               disabled={rsvpBusy}
             >
-              <Text
-                style={[styles.rsvpChipText, rsvp === "going" && styles.rsvpChipTextActive]}
-              >
+              <Text style={[styles.rsvpChipText, rsvp === "going" && styles.rsvpChipTextActive]}>
                 Going
               </Text>
             </TouchableOpacity>
@@ -368,16 +359,16 @@ export default function OrganizeEventDetail() {
               />
               <Row
                 label="Inside radius?"
-                value={
-                  devInside == null ? "—" : devInside ? "Yes (inside)" : "No (outside)"
-                }
+                value={devInside == null ? "—" : devInside ? "Yes (inside)" : "No (outside)"}
               />
               <TouchableOpacity
                 style={[styles.btnOutline, { marginTop: 8 }]}
                 onPress={refreshDevMetrics}
                 disabled={devBusy}
               >
-                <Text style={styles.btnOutlineText}>{devBusy ? "Refreshing…" : "REFRESH METRICS"}</Text>
+                <Text style={styles.btnOutlineText}>
+                  {devBusy ? "Refreshing…" : "REFRESH METRICS"}
+                </Text>
               </TouchableOpacity>
             </View>
           ) : null}
@@ -385,6 +376,16 @@ export default function OrganizeEventDetail() {
           <View style={{ height: 10 }} />
           <TouchableOpacity style={[styles.btnOutline]} onPress={handleGpsCheckin} disabled={gpsBusy}>
             <Text style={styles.btnOutlineText}>{gpsBusy ? "Checking…" : "CHECK IN (GPS)"}</Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 10 }} />
+          <TouchableOpacity
+            style={[styles.btnOutline]}
+            onPress={() =>
+              router.push({ pathname: "/attend/scan", params: { id: eventRow.id } } as any)
+            }
+          >
+            <Text style={styles.btnOutlineText}>OPEN SCANNER</Text>
           </TouchableOpacity>
         </View>
       ) : (
