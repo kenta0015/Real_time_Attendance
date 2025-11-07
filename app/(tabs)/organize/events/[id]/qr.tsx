@@ -1,13 +1,31 @@
 // app/organize/events/[id]/qr.tsx
 // React Native only: do not reference DOM or use window APIs.
+/**
+ * Shared QR screen for BOTH roles (Organizer & Attendee).
+ *
+ * Routing policy (minimal-change, explicit by comments):
+ *   - Attendee and Organizer both navigate to `/organize/events/[id]/qr`.
+ *   - This is intentional to avoid route duplication and prevent Expo Go
+ *     "unmatched route" drift after file adds/moves.
+ *   - If, in the future, you want role-specific URLs without duplicating
+ *     implementation, add a THIN WRAPPER at `app/events/[id]/qr.tsx`
+ *     that simply renders this same screen component.
+ *
+ * Behavior:
+ *   - Shows a rotating token QR that refreshes every PERIOD_SEC.
+ *   - Token is derived from (secret, eventId, userId, slot).
+ */
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, Share } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import QRCode from "react-native-qrcode-svg";
-import { getGuestId } from "../../../../stores/session";
-import { currentSlot, makeToken, PERIOD_SEC } from "../../../../lib/qr";
-import { STR } from "../../../../lib/strings";
+import { getGuestId } from "../../../../../stores/session";
+import { currentSlot, makeToken, PERIOD_SEC } from "../../../../../lib/qr";
+import { STR } from "../../../../../lib/strings";
 
+// IMPORTANT: Shared secret for token generation.
+// Keep in sync with scanner verification side.
 const SECRET = (process.env.EXPO_PUBLIC_QR_SECRET as string) || "DEV";
 
 function resolveEventId(idParam?: string | string[] | null): string | null {
@@ -28,7 +46,7 @@ export default function Screen() {
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Load user id
+  // Load user id (guest or authed). This is used to bind the token.
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -48,6 +66,7 @@ export default function Screen() {
     })();
     return () => {
       mounted = false;
+      // Clear the periodic refresher on unmount to avoid leaks.
       if (timerRef.current) {
         clearInterval(timerRef.current as any);
         timerRef.current = null;
@@ -55,7 +74,8 @@ export default function Screen() {
     };
   }, []);
 
-  // Compute slot & token — refresh every second
+  // Compute slot & token — refresh every second.
+  // NOTE: We intentionally run this in RN-only context; no window/DOM usage.
   useEffect(() => {
     if (!userId || !eventId) return;
 
@@ -88,18 +108,21 @@ export default function Screen() {
     };
   }, [userId, eventId]);
 
+  // Remaining seconds in current slot (for progress bar / UX hint)
   const remaining = useMemo(() => {
     const nowSlot = currentSlot();
     const rem = PERIOD_SEC - (Math.floor(Date.now() / 1000) % PERIOD_SEC);
     return Math.max(0, Math.min(PERIOD_SEC, rem + (slot - nowSlot) * PERIOD_SEC));
   }, [slot]);
 
+  // Progress [0..1] within current slot
   const progress = useMemo(() => {
     const nowSlot = currentSlot();
     const secInSlot = PERIOD_SEC - (remaining + (slot - nowSlot) * PERIOD_SEC);
     return Math.max(0, Math.min(1, secInSlot / PERIOD_SEC));
   }, [remaining, slot]);
 
+  // Share deep link for invite (does not leak token)
   const shareInvite = async () => {
     if (!eventId) return;
     const link = `rta://join?event=${eventId}`;

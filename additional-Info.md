@@ -176,17 +176,13 @@ Start-Process "http://localhost:8081/status"
 
 ## B. APK / ネイティブ検証フェーズ（今回ここで 4.2 / 4.3 を実装・確認）
 
-1.最小修正（effectiveUserId 統一）
+1.最小修正（effectiveUserId 統一） Done
 
 参照・書き込み：effectiveUserId = Session UID || Guest ID
 
 適用範囲：イベント作成 created_by、出席 attendance.user_id、History 集計の参照 ID
 
-旧 /organize/... 遷移は (tabs) 側へ寄せる（eventId 常時付与）
-
-目標：サインイン後、History/Check-in も同一 ID として可視化
-
-2.EAS Update（JS のみ）
+2.EAS Update（JS のみ） Done
 
 eas update --channel internal -m "unify effectiveUserId"
 
@@ -204,27 +200,27 @@ DoD：押下 → トースト/アラート → 履歴に反映（同一 ID で�
 
 前提：ACCESS_BACKGROUND_LOCATION、FOREGROUND_SERVICE_LOCATION、通知許可、電池最適化「制限なし」
 
-5.最小修正の残り（整合仕上げ）
+5. 最小修正の残り（整合仕上げ）
 
 旧ルートの完全整理、router.push/replace の統一
 
 ゲスト既存データのバックフィル（必要範囲のみ）
 
-6.Crashlytics
+6. Crashlytics
 
 テストクラッシュ送信、Enter/Exit 付近の非致命ログ確認
 
-7.英 UI/時差/端末差 最終確認
+7. 英 UI/時差/端末差 最終確認
 
 Australia/Melbourne（UTC+11）で時刻表示の整合
 
 Pixel/Galaxy 実機で文言/改行/遅延の差異
 
-8.データ・セーフティ整合（AAB/Play Console）
+8. データ・セーフティ整合（AAB/Play Console）
 
 パーミッション申告・バックグラウンド位置の用途説明・ポリシー最終確認
 
-9.Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）
+9. Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）
 
 # ① どの画面が Session / Guest を参照しているか
 
