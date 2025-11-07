@@ -23,7 +23,7 @@
     "lib/**/*",
     "**/*.ts",
     "**/*.tsx"
-  ],
+, "__backup_routes__/tabs_qr/qr.tsx.bak"  ],
   "exclude": [
     "node_modules",
     "app.config.js",

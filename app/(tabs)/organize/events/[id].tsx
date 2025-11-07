@@ -82,16 +82,25 @@ export default function OrganizeEventDetail() {
     return () => sub.remove();
   }, [loadRole]);
 
+  // === Route replace guard: DISABLED for stability ===========================
   const didRedirect = useRef(false);
   const targetPath = eid ? `/organize/events/${eid}` : null;
   useEffect(() => {
-    console.log("[guard-effect]", "role=", role, "eid=", eid, "at", pathname);
-    if (role === "attendee" && eid && targetPath) {
-      if (!didRedirect.current && pathname !== targetPath) {
-        didRedirect.current = true;
-        router.replace(targetPath as any);
-      }
-    }
+    // Keep a lightweight log for diagnostics; do not replace route.
+    // This prevents flicker/empty frames and ensures buttons remain visible.
+    console.log(
+      "[guard-effect][DISABLED]",
+      "role=",
+      role,
+      "eid=",
+      eid,
+      "at",
+      pathname,
+      "didRedirect=",
+      didRedirect.current,
+      "targetPath=",
+      targetPath
+    );
   }, [role, eid, pathname, targetPath]);
 
   // === Event row =============================================================
@@ -359,7 +368,9 @@ export default function OrganizeEventDetail() {
               />
               <Row
                 label="Inside radius?"
-                value={devInside == null ? "—" : devInside ? "Yes (inside)" : "No (outside)"}
+                value={
+                  devInside == null ? "—" : devInside ? "Yes (inside)" : "No (outside)"
+                }
               />
               <TouchableOpacity
                 style={[styles.btnOutline, { marginTop: 8 }]}
@@ -386,6 +397,14 @@ export default function OrganizeEventDetail() {
             }
           >
             <Text style={styles.btnOutlineText}>OPEN SCANNER</Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 10 }} />
+          <TouchableOpacity
+            style={[styles.btnOutline]}
+            onPress={() => router.push(`/organize/events/${eventRow.id}/qr` as any)}
+          >
+            <Text style={styles.btnOutlineText}>SHOW EVENT QR</Text>
           </TouchableOpacity>
         </View>
       ) : (
