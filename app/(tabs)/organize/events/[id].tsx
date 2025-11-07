@@ -83,27 +83,19 @@ export default function OrganizeEventDetail() {
   }, [loadRole]);
 
   // === Route replace guard: DISABLED for stability ===========================
-  const didRedirect = useRef(false);
-  const targetPath = eid ? `/organize/events/${eid}` : null;
-  useEffect(() => {
-    // Keep a lightweight log for diagnostics; do not replace route.
-    // This prevents flicker/empty frames and ensures buttons remain visible.
-    console.log(
-      "[guard-effect][DISABLED]",
-      "role=",
-      role,
-      "eid=",
-      eid,
-      "at",
-      pathname,
-      "didRedirect=",
-      didRedirect.current,
-      "targetPath=",
-      targetPath
-    );
-  }, [role, eid, pathname, targetPath]);
+  // useEffect(() => {
+  //   if (!eid) return;
+  //   const timer = setTimeout(() => {
+  //     const path = role === "organizer" ? `/organize/events/${eid}` : `/events/${eid}`;
+  //     if (pathname !== path) {
+  //       console.log("[guard] replacing to", path);
+  //       router.replace(path as any);
+  //     }
+  //   }, 100);
+  //   return () => clearTimeout(timer);
+  // }, [eid, role, pathname]);
 
-  // === Event row =============================================================
+  // === Event load ============================================================
   const [loading, setLoading] = useState(true);
   const [eventRow, setEventRow] = useState<EventRow | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -153,7 +145,10 @@ export default function OrganizeEventDetail() {
         const mapped = raw === "going" ? "going" : raw === "not_going" ? "not_going" : null;
         setRsvp(mapped as RSVPStatus);
       } else setRsvp(null);
-    } catch {}
+    } catch (e: any) {
+      console.warn("[rsvp] load failed:", e?.message);
+      setRsvp(null);
+    }
   }, [eid]);
 
   useEffect(() => {
@@ -176,9 +171,12 @@ export default function OrganizeEventDetail() {
               rsvp_status: next,
               invite_source: "rsvp",
             },
-            { onConflict: "event_id,user_id" }
+            {
+              onConflict: "event_id,user_id",
+            }
           );
         if (error) throw error;
+        Alert.alert("Saved", `RSVP: ${next ?? "—"}`);
       } catch (e: any) {
         Alert.alert("Failed to save RSVP", e?.message ?? "Unknown error");
         loadRsvp();
@@ -191,37 +189,43 @@ export default function OrganizeEventDetail() {
 
   // === GPS check-in ==========================================================
   const [gpsBusy, setGpsBusy] = useState(false);
+  const [lastCheckinAt, setLastCheckinAt] = useState<string | null>(null);
 
   const handleGpsCheckin = useCallback(async () => {
     if (!eventRow) return;
-    if (eventRow.venue_lat == null || eventRow.venue_lng == null) {
-      Alert.alert("No venue location", "This event does not have a venue location.");
-      return;
-    }
-    setGpsBusy(true);
+
     try {
-      const fg = await Location.requestForegroundPermissionsAsync();
+      setGpsBusy(true);
+      // 1) Permissions
+      const fg = await Location.getForegroundPermissionsAsync();
       if (fg.status !== "granted") {
-        Alert.alert("Permission needed", "Location permission is required.");
-        setGpsBusy(false);
-        return;
+        const ask = await Location.requestForegroundPermissionsAsync();
+        if (ask.status !== "granted") {
+          Alert.alert("Permission required", "Location permission is required.");
+          setGpsBusy(false);
+          return;
+        }
       }
+
+      // 2) Current position (high accuracy)
       const pos = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
         mayShowUserSettingsDialog: true,
       });
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      const acc = pos.coords.accuracy ?? null;
 
-      const radiusM = Number(eventRow.venue_radius_m ?? 120) || 120;
-      const distM = haversineMeters(lat, lng, eventRow.venue_lat, eventRow.venue_lng);
+      const radiusM = eventRow.venue_radius_m ?? 100;
+      const distM = haversineMeters(
+        pos.coords.latitude,
+        pos.coords.longitude,
+        eventRow.venue_lat ?? 0,
+        eventRow.venue_lng ?? 0
+      );
       const accThresh = accuracyThreshold(radiusM);
 
-      if (acc != null && acc > accThresh) {
+      if ((pos.coords.accuracy ?? 9999) > accThresh) {
         Alert.alert(
-          "Location too inaccurate",
-          `Reported accuracy ${Math.round(acc)}m > threshold ${Math.round(accThresh)}m. Move to open area and try again.`
+          "Low accuracy",
+          `Accuracy ${Math.round(pos.coords.accuracy ?? 0)}m > threshold ${Math.round(accThresh)}m. Move to open area and try again.`
         );
         setGpsBusy(false);
         return;
@@ -241,6 +245,8 @@ export default function OrganizeEventDetail() {
       if (error) throw error;
 
       Alert.alert("Checked in", "GPS check-in recorded.");
+      try { setLastCheckinAt(new Date().toISOString()); } catch {}
+      try { DeviceEventEmitter.emit("rta_attendance_changed", { event_id: eventRow.id }); } catch {}
     } catch (e: any) {
       const msg = e?.message ?? "GPS check-in failed.";
       Alert.alert("Failed", msg);
@@ -255,86 +261,74 @@ export default function OrganizeEventDetail() {
   const [devInside, setDevInside] = useState<boolean | null>(null);
   const [devBusy, setDevBusy] = useState(false);
 
-  const refreshDevMetrics = useCallback(async () => {
+  const refreshMetrics = useCallback(async () => {
     if (!eventRow) return;
-    if (eventRow.venue_lat == null || eventRow.venue_lng == null) {
-      Alert.alert("No venue location", "This event does not have a venue location.");
-      return;
-    }
-    setDevBusy(true);
     try {
-      const fg = await Location.requestForegroundPermissionsAsync();
-      if (fg.status !== "granted") {
-        Alert.alert("Permission needed", "Location permission is required.");
-        setDevBusy(false);
-        return;
-      }
+      setDevBusy(true);
       const pos = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
         mayShowUserSettingsDialog: true,
       });
-      const lat = pos.coords.latitude;
-      const lng = pos.coords.longitude;
-      const acc = pos.coords.accuracy ?? null;
-
-      const radiusM = Number(eventRow.venue_radius_m ?? 120) || 120;
-      const distM = haversineMeters(lat, lng, eventRow.venue_lat, eventRow.venue_lng);
-      const accThresh = accuracyThreshold(radiusM);
-
-      setDevAcc(acc);
+      const distM = haversineMeters(
+        pos.coords.latitude,
+        pos.coords.longitude,
+        eventRow.venue_lat ?? 0,
+        eventRow.venue_lng ?? 0
+      );
+      setDevAcc(pos.coords.accuracy ?? null);
       setDevDist(distM);
-      setDevInside(acc == null || acc <= accThresh ? distM <= radiusM : null);
+      setDevInside(distM <= (eventRow.venue_radius_m ?? 100));
     } catch (e: any) {
-      Alert.alert("Failed", e?.message ?? "Failed to refresh metrics.");
+      Alert.alert("Failed", e?.message ?? "Unable to refresh metrics.");
     } finally {
       setDevBusy(false);
     }
   }, [eventRow]);
 
-  // === UI ====================================================================
-  if (loading) {
+  if (!eid) {
     return (
-      <View style={styles.container}>
-        <View style={{ padding: 20 }}>
-          <ActivityIndicator />
-          <Text style={styles.subtle}>Loading…</Text>
-        </View>
-      </View>
-    );
-  }
-  if (error || !eventRow) {
-    return (
-      <View style={styles.container}>
-        <Text style={[styles.h1, { color: "red" }]}>Failed to load</Text>
-        <Text style={styles.subtle}>{error ?? "Unknown error"}</Text>
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+        <Text>Invalid route: missing id.</Text>
       </View>
     );
   }
 
-  const inAttendeeMode = role === "attendee";
+  if (loading) {
+    return (
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+        <ActivityIndicator />
+        <Text style={styles.subtle}>Loading…</Text>
+      </View>
+    );
+  }
+
+  if (error || !eventRow) {
+    return (
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+        <Text style={{ color: "crimson" }}>{error ?? "Event not found"}</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.h1}>{eventRow.title ?? "(Untitled event)"}</Text>
+      <Text style={styles.h1}>{eventRow.title ?? "Event"}</Text>
 
       <View style={styles.card}>
-        <Row label="Start (UTC)" value={eventRow.start_utc ?? "—"} />
-        <Row label="End (UTC)" value={eventRow.end_utc ?? "—"} />
-        <Row label="Venue" value={eventRow.location_name || "—"} />
+        <Text style={styles.sectionLabel}>Event</Text>
+        <Row label="Start (UTC)" value={String(eventRow.start_utc ?? "—")} />
+        <Row label="End (UTC)" value={String(eventRow.end_utc ?? "—")} />
+        <Row label="Location" value={String(eventRow.location_name ?? "—")} />
         <Row
-          label="Lat/Lng"
-          value={
-            eventRow.venue_lat != null && eventRow.venue_lng != null
-              ? `${eventRow.venue_lat.toFixed(6)}, ${eventRow.venue_lng.toFixed(6)}`
-              : "—"
-          }
+          label="Center (lat,lng)"
+          value={`${eventRow.venue_lat ?? 0}, ${eventRow.venue_lng ?? 0}`}
         />
-        <Row label="Radius (m)" value={String(eventRow.venue_radius_m ?? "—")} />
+        <Row label="Radius (m)" value={String(eventRow.venue_radius_m ?? 100)} />
       </View>
 
-      {inAttendeeMode ? (
-        <View style={{ paddingHorizontal: 16 }}>
-          <Text style={styles.sectionLabel}>Your RSVP</Text>
+      {role === "attendee" ? (
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>RSVP</Text>
           <View style={styles.rsvpRow}>
             <TouchableOpacity
               style={[styles.rsvpChip, rsvp === "going" && styles.rsvpChipActive]}
@@ -345,6 +339,7 @@ export default function OrganizeEventDetail() {
                 Going
               </Text>
             </TouchableOpacity>
+
             <TouchableOpacity
               style={[styles.rsvpChip, rsvp === "not_going" && styles.rsvpChipActive]}
               onPress={() => saveRsvp("not_going")}
@@ -373,8 +368,8 @@ export default function OrganizeEventDetail() {
                 }
               />
               <TouchableOpacity
-                style={[styles.btnOutline, { marginTop: 8 }]}
-                onPress={refreshDevMetrics}
+                style={[styles.btnOutline, devBusy && { opacity: 0.6 }]}
+                onPress={refreshMetrics}
                 disabled={devBusy}
               >
                 <Text style={styles.btnOutlineText}>
@@ -389,6 +384,12 @@ export default function OrganizeEventDetail() {
             <Text style={styles.btnOutlineText}>{gpsBusy ? "Checking…" : "CHECK IN (GPS)"}</Text>
           </TouchableOpacity>
 
+          {lastCheckinAt ? (
+            <Text style={[styles.subtle, { textAlign: "center" }]}>
+              LAST CHECK-IN: {new Date(lastCheckinAt).toLocaleString()}
+            </Text>
+          ) : null}
+
           <View style={{ height: 10 }} />
           <TouchableOpacity
             style={[styles.btnOutline]}
@@ -398,23 +399,16 @@ export default function OrganizeEventDetail() {
           >
             <Text style={styles.btnOutlineText}>OPEN SCANNER</Text>
           </TouchableOpacity>
-
-          <View style={{ height: 10 }} />
-          <TouchableOpacity
-            style={[styles.btnOutline]}
-            onPress={() => router.push(`/organize/events/${eventRow.id}/qr` as any)}
-          >
-            <Text style={styles.btnOutlineText}>SHOW EVENT QR</Text>
-          </TouchableOpacity>
         </View>
       ) : (
-        <View style={{ paddingHorizontal: 16 }}>
-          <Text style={styles.sectionLabel}>Organizer tools</Text>
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>Organizer</Text>
+
           <TouchableOpacity
-            style={[styles.btnOutline]}
-            onPress={() => router.push(`/organize/events/${eventRow.id}/checkin` as any)}
+            style={[styles.btnPrimary]}
+            onPress={() => router.push(`/organize/events/${eventRow.id}/qr` as any)}
           >
-            <Text style={styles.btnOutlineText}>OPEN CHECK-IN LIST</Text>
+            <Text style={styles.btnPrimaryText}>SHOW EVENT QR</Text>
           </TouchableOpacity>
 
           <View style={{ height: 10 }} />
@@ -422,15 +416,31 @@ export default function OrganizeEventDetail() {
             style={[styles.btnOutline]}
             onPress={() => router.push(`/organize/events/${eventRow.id}/scan` as any)}
           >
-            <Text style={styles.btnOutlineText}>OPEN SCANNER</Text>
+            <Text style={styles.btnOutlineText}>SCAN (ORGANIZER)</Text>
           </TouchableOpacity>
 
           <View style={{ height: 10 }} />
           <TouchableOpacity
             style={[styles.btnOutline]}
-            onPress={() => router.push(`/organize/events/${eventRow.id}/qr` as any)}
+            onPress={() => router.push(`/organize/events/${eventRow.id}/live` as any)}
           >
-            <Text style={styles.btnOutlineText}>SHOW EVENT QR</Text>
+            <Text style={styles.btnOutlineText}>LIVE (ORGANIZER)</Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 10 }} />
+          <TouchableOpacity
+            style={[styles.btnOutline]}
+            onPress={() => router.push(`/organize/events/${eventRow.id}/history` as any)}
+          >
+            <Text style={styles.btnOutlineText}>HISTORY</Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 10 }} />
+          <TouchableOpacity
+            style={[styles.btnOutline]}
+            onPress={() => router.push(`/organize/events/${eventRow.id}/checkin` as any)}
+          >
+            <Text style={styles.btnOutlineText}>CHECK-IN LIST</Text>
           </TouchableOpacity>
 
           <View style={{ height: 10 }} />
@@ -493,54 +503,63 @@ const styles = StyleSheet.create({
     marginTop: 6,
     marginBottom: 8,
   },
-  rsvpRow: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 12,
-  },
-  linkBtn: {
-    marginHorizontal: 16,
-    marginBottom: 24,
-    paddingVertical: 12,
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: BLUE,
-    borderRadius: 12,
-  },
-  linkBtnText: {
-    color: BLUE,
-    fontWeight: "700",
-  },
   devPanel: {
-    backgroundColor: "#F9FAFB",
-    borderWidth: 1,
-    borderColor: CARD_BORDER,
-    padding: 12,
-    borderRadius: 12,
+    marginTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: CARD_BORDER,
+    paddingTop: 8,
   },
   devTitle: {
-    fontWeight: "800",
+    fontSize: 12,
+    color: "#6B7280",
     marginBottom: 6,
-    color: "#111",
+    fontWeight: "700",
+  },
+  btnPrimary: {
+    backgroundColor: BLUE,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  btnPrimaryText: {
+    color: "#fff",
+    fontWeight: "800",
+    letterSpacing: 0.5,
   },
   btnOutline: {
     borderWidth: 1,
     borderColor: BLUE,
+    borderRadius: 10,
     paddingVertical: 12,
     alignItems: "center",
-    borderRadius: 12,
   },
   btnOutlineText: {
     color: BLUE,
     fontWeight: "800",
-    letterSpacing: 0.3,
+    letterSpacing: 0.5,
+  },
+  linkBtn: {
+    marginHorizontal: 16,
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: "center",
+    backgroundColor: "#111827",
+  },
+  linkBtnText: {
+    color: "#fff",
+    fontWeight: "800",
+    letterSpacing: 0.4,
+  },
+  rsvpRow: {
+    flexDirection: "row",
+    gap: 8,
   },
   rsvpChip: {
     borderWidth: 1,
     borderColor: BLUE,
-    borderRadius: 999,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 10,
+    borderRadius: 999,
     alignItems: "center",
   },
   rsvpChipActive: {
@@ -554,3 +573,4 @@ const styles = StyleSheet.create({
     color: "#fff",
   },
 });
+
