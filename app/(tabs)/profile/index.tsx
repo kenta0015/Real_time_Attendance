@@ -4,6 +4,8 @@ import { useFocusEffect } from "@react-navigation/native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { DeviceEventEmitter } from "react-native";
 import { getGuestId } from "../../../stores/session";
+import Button from "../../ui/Button";
+import { supabase } from "../../../lib/supabase";
 
 type Role = "organizer" | "attendee";
 const ROLE_KEY = "rta_dev_role";
@@ -11,9 +13,25 @@ const ROLE_KEY = "rta_dev_role";
 export default function ProfileScreen() {
   const [guestId, setGuestId] = useState<string>("(loading…)"); 
   const [role, setRole] = useState<Role>("organizer");
+  const [signingOut, setSigningOut] = useState(false);
 
   const notify = (m: string) =>
     Platform.OS === "android" ? ToastAndroid.show(m, ToastAndroid.SHORT) : Alert.alert("Info", m);
+
+  const handleSignOut = async () => {
+    setSigningOut(true);
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        throw error;
+      }
+      notify("Signed out");
+    } catch (e: any) {
+      notify(e?.message ?? "Sign out failed");
+    } finally {
+      setSigningOut(false);
+    }
+  };
 
   const load = useCallback(async () => {
     const id = await getGuestId();
@@ -50,6 +68,18 @@ export default function ProfileScreen() {
         <Text style={styles.mono}>{guestId}</Text>
         <Text style={styles.hint}>Stored locally. Resetting app data will change this value.</Text>
       </View>
+
+      <View style={styles.card}>
+        <Text style={styles.label}>Account</Text>
+        <Text style={styles.hint}>Sign out to switch account or return to guest mode.</Text>
+        <Button
+          title={signingOut ? "Signing out…" : "Sign out"}
+          onPress={handleSignOut}
+          disabled={signingOut}
+          style={styles.logoutButton}
+        />
+      </View>
+
     </View>
   );
 }
@@ -72,8 +102,5 @@ const styles = StyleSheet.create({
     color: "#111827",
   },
   hint: { color: "#6B7280", marginTop: 6, fontSize: 12 },
+  logoutButton: { marginTop: 8, alignSelf: "flex-start" },
 });
-
-
-
-

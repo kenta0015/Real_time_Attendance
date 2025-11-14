@@ -25,6 +25,10 @@ import { getGuestId } from "../../../stores/session";
 type Role = "organizer" | "attendee";
 const ROLE_KEY = "rta_dev_role";
 
+const enableDev = false;
+  (typeof __DEV__ !== "undefined" && __DEV__) ||
+  process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
 type GroupRow = { id: string; name: string | null; description?: string | null };
 type EventRow = {
   id: string;
@@ -81,13 +85,29 @@ export default function OrganizeIndexScreen() {
   };
 
   const loadRole = useCallback(async () => {
-    const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-    setRole(v === "attendee" ? "attendee" : "organizer");
+    try {
+      if (!enableDev) {
+        console.log("[OrganizeIndex] loadRole -> force organizer (enableDev=false)");
+        setRole("organizer");
+        return;
+      }
+      const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
+      const r: Role = v === "attendee" ? "attendee" : "organizer";
+      console.log("[OrganizeIndex] loadRole ->", r);
+      setRole(r);
+    } catch (e) {
+      console.log("[OrganizeIndex] loadRole error", e);
+      setRole("organizer");
+    }
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       loadRole();
+      if (!enableDev) {
+        console.log("[OrganizeIndex] focus -> skip role_changed listener (enableDev=false)");
+        return;
+      }
       const sub = DeviceEventEmitter.addListener("rta_role_changed", loadRole);
       return () => sub.remove();
     }, [loadRole])

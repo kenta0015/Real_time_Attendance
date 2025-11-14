@@ -32,6 +32,10 @@ import { formatRangeInVenueTZ, maybeLocalHint } from "../../../src/utils/timezon
 type Role = "organizer" | "attendee";
 const ROLE_KEY = "rta_dev_role";
 
+const enableDev = false;
+  (typeof __DEV__ !== "undefined" && __DEV__) ||
+  process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
 type EventRow = {
   id: string;
   title: string | null;
@@ -64,9 +68,18 @@ export default function EventsListScreen() {
 
   // --- fetch helpers ---
   const readRoleAndGuest = useCallback(async (): Promise<{ role: Role; guestId: string }> => {
+    const gid = await getEffectiveUserId();
+
+    if (!enableDev) {
+      // Production / non-dev mode: always treat as organizer
+      console.log("[EventsList] readRoleAndGuest -> force organizer (enableDev=false)", {
+        effectiveIdShort: gid?.slice(0, 6),
+      });
+      return { role: "organizer", guestId: gid };
+    }
+
     const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
     const r: Role = v === "attendee" ? "attendee" : "organizer";
-    const gid = await getEffectiveUserId();
     console.log("[EventsList] effectiveIdFull =", gid);
     console.log("[EventsList] readRoleAndGuest ->", { role: r, effectiveIdShort: gid?.slice(0, 6) });
     return { role: r, guestId: gid };
@@ -182,6 +195,10 @@ export default function EventsListScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      if (!enableDev) {
+        console.log("[EventsList] focus -> skip role_changed listener (enableDev=false)");
+        return;
+      }
       console.log("[EventsList] focus -> attach role_changed listener");
       const sub = DeviceEventEmitter.addListener("rta_role_changed", initialLoad);
       return () => {

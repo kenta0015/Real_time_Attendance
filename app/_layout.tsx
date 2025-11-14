@@ -18,6 +18,13 @@ export const unstable_settings = { initialRouteName: "join" };
 // Ultra-early
 installGlobalLogger();
 
+// Dev / production switch (shared policy)
+const enableDev =  false;
+  (typeof __DEV__ !== "undefined" && __DEV__) ||
+  process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
+console.info("[dev-switch] enableDev =", enableDev);
+
 Notifications.setNotificationHandler({
   handleNotification: async (_n: Notifications.Notification) => ({
     shouldPlaySound: false,
@@ -67,7 +74,7 @@ export default function RootLayout() {
       <PermissionsGate>
         <View style={{ flex: 1 }} pointerEvents="box-none">
           <Stack screenOptions={{ headerShown: false }} />
-          <DevRoleBadge />
+          {enableDev && <DevRoleBadge />}
           <ToastHost />
         </View>
       </PermissionsGate>

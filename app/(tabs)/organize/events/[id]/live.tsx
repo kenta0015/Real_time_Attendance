@@ -1,4 +1,4 @@
-// app/organize/events/[id]/live.tsx
+// app/(tabs)/organize/events/[id]/live.tsx
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
@@ -13,6 +13,7 @@ import {
   Platform,
   Alert,
   ToastAndroid,
+  BackHandler,
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
@@ -20,10 +21,9 @@ import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import { armGeofenceAt, disarmGeofence, geofenceStatus } from "@/lib/geofenceActions";
 
-import Button from "../../../ui/Button";
-import Card from "../../../ui/Card";
-import Tile from "../../../ui/Tile";
-
+import Button from "../../../../ui/Button";
+import Card from "../../../../ui/Card";
+import Tile from "../../../../ui/Tile";
 import { COLORS, SPACING, RADIUS } from "@ui/theme";
 
 type StatusRow = {
@@ -99,6 +99,28 @@ export default function LiveScreen() {
     );
     return () => sub.subscription?.unsubscribe();
   }, [fetchSession]);
+
+  // ===== Android back behavior polish (fallback to Event Detail when no history) =====
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      // 1) Close Edit modal first if open
+      if (editTarget) {
+        setEditTarget(null);
+        return true; // consumed
+      }
+      // 2) If navigator has history, let default behavior handle it
+      try {
+        // @ts-ignore expo-router router may expose canGoBack()
+        if (router?.canGoBack?.()) return false; // not consumed
+      } catch {}
+      // 3) No history: fallback to Event Detail (or /organize) — use push (normal navigation)
+      const fallback = eventId ? `/organize/events/${eventId}` : "/organize";
+      router.push(fallback);
+      return true; // consumed
+    });
+    return () => sub.remove();
+  }, [eventId, editTarget]);
 
   const load = useCallback(async () => {
     if (!eventId) return;
@@ -364,13 +386,10 @@ export default function LiveScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Top right links only (back link removed) */}
+      {/* Top right link (History link removed) */}
       <View style={styles.topLinksRow}>
         <TouchableOpacity onPress={() => router.push(`/organize/events/${eventId}/settings`)}>
           <Text style={styles.link}>Edit Grace Windows</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => router.push(`/organize/events/${eventId}/history`)}>
-          <Text style={styles.link}>History</Text>
         </TouchableOpacity>
       </View>
 
@@ -418,7 +437,7 @@ export default function LiveScreen() {
         </Text>
       </Card>
 
-      {/* Summary tiles moved below (kept simple row) */}
+      {/* Summary tiles */}
       <View style={styles.tilesRow}>
         <Tile label="Total" value={totals.total} style={styles.tileFlex} />
         <Tile label="On-time" value={totals.ontime} style={styles.tileFlex} />
@@ -499,7 +518,7 @@ const shortId = (id: string) => id.slice(0, 6) + "…" + id.slice(-3);
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.bg, padding: SPACING.lg },
 
-  // Back link removed; keep only right-side links
+  // Back link removed; keep only right-side link
   topLinksRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
