@@ -18,30 +18,53 @@ export default function DevRoleBadge() {
   const [role, setRole] = useState<Role>("organizer");
 
   const load = useCallback(async () => {
-    const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-    setRole(v === "attendee" ? "attendee" : "organizer");
+    try {
+      const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
+      const normalized: Role = v === "attendee" ? "attendee" : "organizer";
+      console.log(
+        "[DevRoleBadge] load() from AsyncStorage:",
+        v,
+        "=> normalized:",
+        normalized
+      );
+      setRole(normalized);
+    } catch (e) {
+      console.log("[DevRoleBadge] load() failed:", String(e));
+      setRole("organizer");
+    }
   }, []);
 
   useEffect(() => {
+    console.log("[DevRoleBadge] mount");
     load();
   }, [load]);
 
   const emitRoleChanged = (next: Role) => {
-    // Native event only（WebでもRN実装があるのでOK）
     try {
+      console.log("[DevRoleBadge] emit rta_role_changed:", next);
       DeviceEventEmitter.emit("rta_role_changed", next);
-    } catch {}
+    } catch (e) {
+      console.log("[DevRoleBadge] emit failed:", String(e));
+    }
   };
 
   const toggle = useCallback(async () => {
     const next: Role = role === "organizer" ? "attendee" : "organizer";
-    await AsyncStorage.setItem(ROLE_KEY, next);
+    console.log("[DevRoleBadge] toggle pressed. current:", role, "next:", next);
+    try {
+      await AsyncStorage.setItem(ROLE_KEY, next);
+      console.log("[DevRoleBadge] AsyncStorage set:", ROLE_KEY, "=", next);
+    } catch (e) {
+      console.log("[DevRoleBadge] AsyncStorage.setItem failed:", String(e));
+    }
     setRole(next);
     emitRoleChanged(next);
   }, [role]);
 
   const top = Math.max(insets.top, 8) + 8;
   const right = Math.max(insets.right, 8) + 8;
+
+  console.log("[DevRoleBadge] render. role =", role);
 
   return (
     <View pointerEvents="box-none" style={[styles.wrap, { top, right }]}>
@@ -74,7 +97,3 @@ const styles = StyleSheet.create({
   text: { fontWeight: "700", color: "#111827" },
   hint: { fontSize: 10, color: "#374151" },
 });
-
-
-
-

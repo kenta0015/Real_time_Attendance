@@ -83,11 +83,11 @@ export default function AttendScanScreen() {
       }
 
       if (parsed.kind === "checkin") {
-        router.replace({ pathname: "/attend/checkin", params: { token: parsed.token } });
+        router.push({ pathname: "/attend/checkin", params: { token: parsed.token } });
         return;
       }
 
-      router.replace({ pathname: "/join", params: { token: parsed.token } });
+      router.push({ pathname: "/join", params: { token: parsed.token } });
     },
     [isScanning, router]
   );

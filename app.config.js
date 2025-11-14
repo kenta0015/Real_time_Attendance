@@ -36,7 +36,7 @@ export default ({ config }) => {
       package: isProd
         ? "com.kenta0015.geoattendance"
         : "com.kenta0015.geoattendance.internal",
-      versionCode: 1,
+      versionCode: 2,
       permissions: [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -45,7 +45,10 @@ export default ({ config }) => {
         "POST_NOTIFICATIONS",
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
-      ]
+      ],
+      foregroundService: {
+        type: "location"
+      }
     },
 
     // ---- iOS ----

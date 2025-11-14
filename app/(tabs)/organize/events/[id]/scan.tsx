@@ -12,11 +12,10 @@ import {
 } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { supabase } from "../../../../lib/supabase";
-import { verifyToken, currentSlot } from "../../../../lib/qr";
-
-import Button from "../../../ui/Button";
-import Card from "../../../ui/Card";
+import { supabase } from "../../../../../lib/supabase";
+import { verifyToken, currentSlot } from "../../../../../lib/qr";
+import Button from "../../../../ui/Button";
+import Card from "../../../../ui/Card";
 import { COLORS, SPACING, RADIUS } from "@ui/theme";
 
 type AttendanceRow = {

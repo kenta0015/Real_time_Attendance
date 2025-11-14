@@ -176,51 +176,332 @@ Start-Process "http://localhost:8081/status"
 
 ## B. APK / ネイティブ検証フェーズ（今回ここで 4.2 / 4.3 を実装・確認）
 
-1.最小修正（effectiveUserId 統一） Done
+1.最小修正（effectiveUserId 統一） Done!
 
 参照・書き込み：effectiveUserId = Session UID || Guest ID
 
 適用範囲：イベント作成 created_by、出席 attendance.user_id、History 集計の参照 ID
 
-2.EAS Update（JS のみ） Done
+2.EAS Update（JS のみ） Done!
 
 eas update --channel internal -m "unify effectiveUserId"
 
 端末側：アプリ再起動 → 更新適用の確認（ログで effectiveUserId 出力が望ましい）
 
-3.  4.2 位置打刻（APK で）
+3.  4.2 位置打刻（APK で）Done!
 
 成功/拒否の理由表示（距離/精度/権限）
 
 DoD：押下 → トースト/アラート → 履歴に反映（同一 ID で画面にも反映）
 
-4.  4.3 Enter/Exit（APK で）
+4.  4.3 Enter/Exit（APK で）Done!
 
 半径 100–150m、境界跨ぎで queue 増加・再登録後も安定
 
 前提：ACCESS_BACKGROUND_LOCATION、FOREGROUND_SERVICE_LOCATION、通知許可、電池最適化「制限なし」
 
-5. 最小修正の残り（整合仕上げ）
+5. 最小修正の残り（整合仕上げ） Done!
 
 旧ルートの完全整理、router.push/replace の統一
 
 ゲスト既存データのバックフィル（必要範囲のみ）
 
-6. Crashlytics
-
-テストクラッシュ送信、Enter/Exit 付近の非致命ログ確認
-
-7. 英 UI/時差/端末差 最終確認
+6. 英 UI/時差/端末差 最終確認 Done!
 
 Australia/Melbourne（UTC+11）で時刻表示の整合
 
 Pixel/Galaxy 実機で文言/改行/遅延の差異
 
-8. データ・セーフティ整合（AAB/Play Console）
+7. データ・セーフティ整合（AAB/Play Console）Done!
 
 パーミッション申告・バックグラウンド位置の用途説明・ポリシー最終確認
 
+ChatGPT の Google Play Console の各フォームに何を書けばいいかの “回答メモ内にあり！！
+
+8. Event を delite する機能を追加 Done!
+   複数のイベントが active の場合、geofence を Arm した場合、すべての active なイベントが有効になってしまう。取り急ぎ Delite で対応。原因はまた後程突き止める
+
 9. Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）
+
+10. Crashlytics(アプリリリース後、Crashlytics の導入から)
+
+テストクラッシュ送信、Enter/Exit 付近の非致命ログ確認
+
+# 9. Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）について
+
+## 全体像: 案 1 → 審査出し → 案 2
+
+- フェーズ A: 案 1 の実装完了 ＋ v1 を Google Play に提出
+- フェーズ B: 審査待ち期間に案 2 の設計・実装を進める（ローカル or 別ブランチ）
+- フェーズ C: v1 公開後に案 2 を載せた v1.1 をリリース
+
+---
+
+## フェーズ A: 案 1（DEV ロールを本番から隠す）＋ v1 審査出し
+
+### A-1. 現状の安定確認とスコープ固定
+
+- [ ] 位置打刻（GPS）と Enter/Exit の挙動を再確認
+  - [ ] Organizer 詳細画面から:
+    - [ ] GPS Check-in 実行
+    - [ ] Geofence ARM / DISARM
+  - [ ] History 画面で出席履歴が期待通りに反映されること
+- [ ] Event Delete ボタンの挙動を確認
+  - [ ] 対象イベントを削除
+  - [ ] 一覧から消えていること
+  - [ ] Geofence が DISARM されていること（ステータス確認）
+
+ここで「今の v1 の機能セット」を固定した前提で、Step 9（ロール廃止の最小修正）に入る。
+
+---
+
+### A-2. 案 1: DEV ロールを本番から隠す（Debug 用に保管）
+
+#### A-2-1. グローバル設定方針　完了
+
+- [ ] 環境変数で「DEV ロールスイッチ」を制御する方針を明確化
+
+  - 例: `EXPO_PUBLIC_ENABLE_DEV_SWITCH`
+  - 本番ビルド:
+    - `EXPO_PUBLIC_ENABLE_DEV_SWITCH` を `"0"` または未設定にする
+  - 開発ビルド / internal チャンネル:
+
+    - `EXPO_PUBLIC_ENABLE_DEV_SWITCH="1"` を許可
+
+  ※A-2-1. グローバル設定方針（DEV ロールスイッチ）※決定事項
+
+1. 使うフラグを 1 本に統一する
+
+開発用ロール切り替えのオンオフは、これ 1 本だけで管理する方針にします。
+
+環境変数名: EXPO_PUBLIC_ENABLE_DEV_SWITCH
+
+JS 側の定義イメージ（すでに tabs レイアウトで使っている形で OK）
+
+const enableDev =
+(typeof **DEV** !== "undefined" && **DEV**) ||
+process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
+このルールの意味:
+
+Expo Go / ローカル開発
+**DEV** が true なので、何もしなくても enableDev = true
+→ これまで通り DevRoleBadge と DEV 用タブ挙動が使える
+
+EAS Build（internal / production）
+**DEV** は false になるので、
+
+EXPO_PUBLIC_ENABLE_DEV_SWITCH="1" → enableDev = true（Debug 用ビルド）
+
+それ以外 → enableDev = false（本番想定）
+
+この「enableDev」を、今後は
+
+app/\_layout.tsx（DevRoleBadge の表示条件）
+
+app/(tabs)/\_layout.tsx（Debug タブ・Organizer ロックの表示条件）
+
+stores/devRole.ts / roleGates.ts（必要なら）
+
+などで共通の「真偽値」として見ていく想定です。
+
+2. EAS 側の設定方針
+
+eas.json の build プロファイルごとに、こういう方針にしておくと整理しやすいです。
+
+internal プロファイル（社内テスト・Debug 用）
+
+env.EXPO_PUBLIC_ENABLE_DEV_SWITCH = "1"
+
+→ DevRoleBadge や Debug タブを使ってテストできる
+
+production プロファイル（ストア提出用）
+
+env.EXPO_PUBLIC_ENABLE_DEV_SWITCH は 設定しない か "0"
+
+→ すべての DEV ロール UI・挙動が封印される
+
+この設定さえしておけば、
+
+「どのビルドでロール切り替えを出すか」は eas.json 側だけで制御できる
+
+コード内では常に enableDev を見るだけで済む
+
+という状態になります。
+
+#### A-2-2. DevRoleBadge（画面右上のロール切替バッジ）の制御　完了
+
+対象ファイルの想定:
+
+- app/\_layout.tsx
+- components/DevRoleBadge.tsx（存在する場合）
+
+やること:
+
+- [ ] DevRoleBadge を描画する条件に `enableDev` を追加
+  - [ ] `EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1"` のときだけ表示
+  - [ ] 本番ビルドではバッジが一切出ない状態にする
+
+#### A-2-3. Tabs 周りのロール依存の整理(ロール切り替えの中身は完了（ログで確認済み　ラベルだけが Organize (locked) に変わらないが、機能的には OK なので放置)
+
+対象ファイル:
+
+- app/(tabs)/\_layout.tsx
+
+やること:
+
+- [ ] Organizer タブの `href` 制御を見直す
+  - [ ] 本番ビルドでは:
+    - Organizer タブは常に有効（ロック表示は不要）
+  - [ ] Debug 時のみ:
+    - Attendee ロール選択時に `href: null` などでロック表示してもよい
+- [ ] Debug 用の Hidden ルート（admin など）はそのまま維持
+  - [ ] `options={{ href: null }}` でタブには出さず、直接リンクでのみアクセスできる状態を保つ
+
+#### A-2-4. devRole ストアと role Gate の扱い
+
+対象ファイル例:
+
+- stores/devRole.ts
+- components/roleGates.ts
+- app/(tabs)/organize/admin/\_layout.tsx など
+
+やること:
+
+- [ ] `useIsOrganizer` / `useIsAttendee` 内で `enableDev` をチェック
+  - [ ] `enableDev` が false の場合:
+    - 本番では「Organizer アプリ」として扱う（実質 `isOrganizer = true` としてよい）
+  - [ ] `enableDev` が true の場合:
+    - 今まで通り DEV ロールスイッチの状態を反映（Debug 用）
+- [ ] Admin 系ルートは引き続き `useIsOrganizer` でガード
+  - 本番ユーザーは通常触れない想定で問題ない
+
+---
+
+### A-3. 案 1 実装後のテスト観点
+
+- [ ] Debug ビルド（Expo Go / internal 環境）
+  - [ ] DevRoleBadge が表示され、Organizer/Attendee 切替ができる
+  - [ ] Tabs 表示:
+    - [ ] History / Organize / Profile / Debug の 4 つが期待通り
+  - [ ] Organizer / Attendee モード切替で:
+    - [ ] Organizer: Organize タブからイベント作成〜QR 表示ができる
+    - [ ] Attendee: Organizer 機能側がロック（または使わない想定）でも、最低限 History や Scan が検証できる
+- [ ] 本番設定と同等のビルド（ローカルで env を本番設定にする）
+  - [ ] DevRoleBadge が表示されないこと
+  - [ ] Tabs に余計なタブが出ていないこと
+  - [ ] Organizer フロー（イベント作成〜QR〜Check-in〜History）が一通り問題なく動く
+
+---
+
+### A-4. v1 の Google Play 提出フロー
+
+#### A-4-1. ビルドとバージョン管理
+
+- [ ] app.json / app.config の version / versionCode を更新
+- [ ] EAS Build:
+  - [ ] Android AAB を production 用プロファイルでビルド
+  - [ ] 実機で最終確認（APK か internal track 経由）
+
+#### A-4-2. Play Console 側の設定
+
+- [ ] アプリの説明文・スクリーンショットの更新
+- [ ] Data Safety フォーム:
+  - [ ] 位置情報（foreground / background）利用の目的を整理
+  - [ ] ジオフェンス・出席管理の用途として記載
+- [ ] パーミッション説明:
+  - [ ] ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION
+  - [ ] ACCESS_BACKGROUND_LOCATION
+  - [ ] FOREGROUND_SERVICE_LOCATION 等がある場合の説明
+
+#### A-4-3. 審査提出
+
+- [ ] テストトラック（internal または closed）で AAB をアップロード
+- [ ] リリースノートに v1 の範囲を簡潔に記載
+- [ ] 審査へ送信
+
+ここまでで「案 1 ベースの v1 をストアへ提出」までを完了とする。
+
+---
+
+## フェーズ B: 審査待ち期間中に案 2（Register ＋ロール設計）の準備
+
+審査中は Play Console に新ビルドを出さず、ローカル or 別ブランチで作業する想定。
+
+### B-1. 案 2 の仕様固め（ドキュメント化）
+
+- [ ] Register 画面の UX をテキストで整理
+  - [ ] 入力項目:
+    - [ ] 名前（表示名）
+    - [ ] 役割（Organizer / Attendee）
+  - [ ] 初回起動時のフロー:
+    - [ ] 未登録ユーザーは必ず Register 画面へ
+    - [ ] 登録済みユーザーは role に応じたホームへ遷移
+- [ ] Organizer / Attendee 用の「ホーム画面イメージ」を言語化
+  - Organizer:
+    - 現状の Organize タブ＋ History をベース
+  - Attendee:
+    - 参加イベント一覧（History ベース）
+    - QR スキャン入口（attend/scan）
+- [ ] 既存の招待トークン（join フロー）とどう組み合わせるかの案をまとめる
+
+### B-2. データモデル案
+
+- [ ] Supabase 側に `user_profile.role` などのカラム追加案を整理
+  - [ ] 値の候補: `"organizer"`, `"attendee"`
+  - [ ] 既存ユーザーのデフォルトは `"organizer"` とするか要検討
+- [ ] ローカル保存との役割分担を決める
+  - [ ] 本当のソースオブトゥルースは Supabase か
+  - [ ] 端末ごとの一時フラグとして AsyncStorage を使うか
+
+### B-3. ルーティング方針
+
+- [ ] 起動時のエントリーポイント
+  - [ ] `app/index.tsx` または `app/_layout.tsx` で
+    - [ ] 「role が未登録なら /register」へ
+    - [ ] role があれば:
+      - Organizer → `/organize` または `/events`
+      - Attendee → `/events` または専用タブ
+- [ ] タブ構成の草案
+  - Organizer:
+    - History / Organize / Profile / Debug
+  - Attendee:
+    - My Events / Scan / Profile 等、シンプルな構成
+
+---
+
+## フェーズ C: v1 公開後に案 2 を実装して v1.1 としてリリース
+
+ここから先は、v1 公開後の段階で実際に手を動かすフェーズ。
+
+### C-1. 実装ステップ（案）
+
+- [ ] ブランチ作成
+  - 例: `feature/register-role-v2`
+- [ ] Register 画面の UI 骨組み
+  - [ ] 名前入力
+  - [ ] ロール選択（Organizer / Attendee）
+  - [ ] 決定ボタン
+- [ ] Supabase との連携
+  - [ ] プロファイルテーブルに role を保存
+  - [ ] ログイン済みユーザーの role を取得するフック作成
+- [ ] 起動フローの組み込み
+  - [ ] `app/index.tsx` で:
+    - [ ] role 未設定 → `/register`
+    - [ ] role 設定済み → role に応じてホームへ
+- [ ] タブ構成の出し分け
+  - [ ] Organizer 用タブ
+  - [ ] Attendee 用タブ（最低限: 履歴＋スキャン入口）
+
+### C-2. テストとリリース準備
+
+- [ ] 新旧ユーザーのテストケース洗い出し
+  - [ ] v1 から v1.1 にアップデートした場合
+  - [ ] 新規インストールの場合
+- [ ] EAS Build で v1.1 用 AAB を作成
+- [ ] Play Console でアップデートとして提出
+
+---
 
 # ① どの画面が Session / Guest を参照しているか
 
@@ -301,28 +582,6 @@ $id = "6252e880-30c7-41e5-95c2-b1cad25de83f" # 対象イベント ID
 <event id>
 6252e880-30c7-41e5-95c2-b1cad25de83f
 
-## サインイン画面を出現させる方法
-
-方式 A：アプリのデータを消去して起動（推奨）
-
-Expo Go で確認する場合
-
-Android 設定 → アプリ → Expo Go → 「ストレージとキャッシュ」
-
-ストレージを消去（= AsyncStorage が空になる → セッション消滅）
-
-PC で npx expo start -c（キャッシュもクリア）→ 端末で新 QR を読み込む
-
-/join が出続けるので、画面の Session 行が “Not signed in” であることを確認
-
-インストール済み APK で確認する場合
-
-Android 設定 → アプリ → GeoAttendance（あなたの APK 名） → 「ストレージとキャッシュ」
-
-ストレージを消去
-
-アプリを起動 → /join が出続ける → Session 行を確認
-
 # /organize と /events を単一 EventDetail へ共通化
 
 目的
@@ -392,3 +651,159 @@ QR は EXPO_PUBLIC_QR_SECRET と currentSlot を共通で。
 
 ロールバック
 緊急時は /events/[id].tsx を一時的に /organize/events/[id] へ router.replace()。
+
+# 「Swipe で落とすと EXIT が来ない」の有力原因（優先順）：
+
+1. タスク定義が“画面内”にある
+
+TaskManager.defineTask('RTA_GEOFENCE', …) が画面（例 /organize/events/[id].tsx）に置かれていると、プロセスが落ちた後は定義自体が読み込まれないため、ENTER/EXIT ブロードキャストが届いてもヘッドレス実行できない。
+
+対策：トップレベルのモジュール（例 src/tasks/geofence.ts）に定義し、アプリのエントリ（app/index.tsx など）からインポートして常時登録しておく。
+
+2. Swipe Kill 後に“プロセス復帰の足掛かり”が無い
+
+Android はユーザー操作でタスクを掃くと、常駐していない限りプロセスを即終了。純ジオフェンスは OS 側で保持されるが、Expo のヘッドレス JS を起こせない端末状態だと処理が走らないことがある。
+
+対策：Arm 時に 軽量の startLocationUpdatesAsync（foregroundService 付き）を並走させ、数分〜継続的にプロセス生存/再起動のフックを作る（バッテリー最適化は Unrestricted で回避済み）。
+
+3. Expo Task Manager の制約（Killed 状態）
+
+Expo のタスクはユーザーが明示終了した状態では走らない場合がある（端末/OS バージョン差あり）。Pixel でも再現例あり。
+
+対策：① のトップレベル定義＋ ② の前景サービス併用で実務上は安定。
+
+4. 再アームの永続化不足
+
+プロセス終了で登録が落ちているのに UI は「Armed」のまま…という齟齬。
+
+対策：AsyncStorage に armed:true, eventId, regions を保存し、アプリ起動時に自動で再登録。必要なら**通知で“Re-armed”**を出す。
+
+5. 端末/OS の省電力・メーカー挙動
+
+Doze やデバイスごとの最適化がヘッドレス起動を抑制。
+
+対策：既に設定済みの Allow all the time + Battery Unrestricted は正解。SIM の有無やオフラインはジオフェンス自体には無関係。
+
+## 結論
+
+いまは Home ケースで OK → リリースで良い。
+後で Swipe Kill も安定させるなら、① タスクのトップレベル化＋ ②Arm 時に前景サービスで keep-alive ＋ ④ 自動再アーム、この 3 点が最も効果的。
+
+# Show Event QR から戻ると History に行く
+
+対象画面：/app/(tabs)/organize/events/[id]/qr.tsx（Show Event QR）
+
+遷移元：/app/(tabs)/organize/events/[id].tsx（Organizer のイベント詳細）
+
+現象：Show Event QR を開いた後、Android の戻るボタンを 1 回押すと History タブ に戻る。イベント詳細には戻らない。
+
+他画面の戻り挙動：
+
+Live（/app/(tabs)/organize/events/[id]/live.tsx）：戻る 1 回でイベント詳細に戻る
+
+Scan（Organizer）（/app/(tabs)/organize/events/[id]/scan.tsx）：戻る 1 回でイベント詳細に戻る
+
+実施済み作業：live.tsx/scan.tsx を (tabs) 配下へ移動済み。
+
+追加メモ：ADB 直 URL テストは Live で実施し、現在は「通常フロー（イベント詳細 → 各画面）」での挙動を確認済み。QR のみ上記の戻り挙動。
+
+※Check in/invite/Setting も戻るを押すと History に行ってしまう
+
+### EventDetail 単体共通化：今回は手を付けない（後続タスク候補として据え置き）
+
+# 本番では enableDev = false」のルールを決める
+
+EXPO_PUBLIC_ENABLE_DEV_SWITCH をどこで管理しているかによりますが、基本はこんな方針にします：
+
+開発（ローカル / Dev Client / internal APK）
+
+EXPO_PUBLIC_ENABLE_DEV_SWITCH=1
+
+Play Console に出す「本番用 AAB」
+
+EXPO_PUBLIC_ENABLE_DEV_SWITCH=0
+
+# Dev ロール切り替えを出したい時／隠したい時」の切り替えメモ
+
+1. どこをいじればいいか
+
+enableDev を使っているファイルは少なくともこの 4 つ：
+
+1.app/\_layout.tsx
+
+DevRoleBadge を出すかどうかを決めている。
+
+2.(tabs)/\_layout.txs
+
+3.app/(tabs)/screens/EventsList.tsx（History タブ）
+
+4.app/(tabs)/organize/index.tsx（Organize タブ）
+
+ルール：この 4 つの enableDev の値を必ず同じにする。
+これがずれると、「バッジは出ないけど中身は Attendee ロール」みたいなズレがまた起きます。
+
+2. Dev ロール切り替えを 復活させる（開発モード）
+   やること
+
+3 ファイルとも、enableDev を 環境依存の式に戻す：
+
+const enableDev =
+(typeof **DEV** !== "undefined" && **DEV**) ||
+process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
+**DEV** === true の Expo Go では、自動的に Dev モード ON
+
+本番ビルドでも EXPO_PUBLIC_ENABLE_DEV_SWITCH=1 を入れれば Dev モードを強制 ON にできる
+
+挙動
+
+DevRoleBadge が表示される
+
+Badge から Organizer / Attendee を切り替えると：
+
+AsyncStorage("rta_dev_role") が更新される
+
+DeviceEventEmitter("rta_role_changed") → History / Organize がそれを拾ってロールを更新
+
+History / Organize は Attendee / Organizer 両方の UI を切り替えて確認できる
+
+3. Dev ロール切り替えを 一時的に隠す（本番想定モード）
+   やること
+
+3 ファイルとも、enableDev を 固定で false にする：
+
+const enableDev = false;
+
+（\_layout.tsx, EventsList.tsx, organize/index.tsx の 3 か所）
+
+挙動
+
+DevRoleBadge が表示されない
+
+EventsList / Organize では：
+
+enableDev === false の分岐で ロールを強制的に "organizer" にする
+
+rta_role_changed のリスナーもスキップする
+→ 画面の「視点」は常に Organizer 固定
+
+つまり、
+
+History …「Organizer 視点の履歴」UI
+
+Organize …「イベント作成＋ Organizer 用 Recent events」UI
+のまま変わらない
+
+4. 切り替えるときのワークフロー
+
+変更したいモードに合わせて、上の通り 3 ファイルの enableDev を揃える
+
+expo start -c で一度キャッシュをクリアして再起動すると確実
+
+Dev モード ON にした直後で挙動がおかしければ、DevRoleBadge から一度 Organizer / Attendee をタップして rta_dev_role をリセットする
+
+これで、
+
+開発中に切り替えて挙動確認したいとき → Dev モード（enableDev=式）
+
+審査・本番想定の挙動を見たいとき → Organizer 固定モード（enableDev=false）
