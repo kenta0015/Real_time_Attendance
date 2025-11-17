@@ -172,61 +172,6 @@ Start-Process "http://localhost:8081/status"
 & "$adb" -s $serial shell am start -W -a android.intent.action.VIEW `
 -d "rta://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081"
 
-# ロードマップ v2
-
-## B. APK / ネイティブ検証フェーズ（今回ここで 4.2 / 4.3 を実装・確認）
-
-1.最小修正（effectiveUserId 統一） Done!
-
-参照・書き込み：effectiveUserId = Session UID || Guest ID
-
-適用範囲：イベント作成 created_by、出席 attendance.user_id、History 集計の参照 ID
-
-2.EAS Update（JS のみ） Done!
-
-eas update --channel internal -m "unify effectiveUserId"
-
-端末側：アプリ再起動 → 更新適用の確認（ログで effectiveUserId 出力が望ましい）
-
-3.  4.2 位置打刻（APK で）Done!
-
-成功/拒否の理由表示（距離/精度/権限）
-
-DoD：押下 → トースト/アラート → 履歴に反映（同一 ID で画面にも反映）
-
-4.  4.3 Enter/Exit（APK で）Done!
-
-半径 100–150m、境界跨ぎで queue 増加・再登録後も安定
-
-前提：ACCESS_BACKGROUND_LOCATION、FOREGROUND_SERVICE_LOCATION、通知許可、電池最適化「制限なし」
-
-5. 最小修正の残り（整合仕上げ） Done!
-
-旧ルートの完全整理、router.push/replace の統一
-
-ゲスト既存データのバックフィル（必要範囲のみ）
-
-6. 英 UI/時差/端末差 最終確認 Done!
-
-Australia/Melbourne（UTC+11）で時刻表示の整合
-
-Pixel/Galaxy 実機で文言/改行/遅延の差異
-
-7. データ・セーフティ整合（AAB/Play Console）Done!
-
-パーミッション申告・バックグラウンド位置の用途説明・ポリシー最終確認
-
-ChatGPT の Google Play Console の各フォームに何を書けばいいかの “回答メモ内にあり！！
-
-8. Event を delite する機能を追加 Done!
-   複数のイベントが active の場合、geofence を Arm した場合、すべての active なイベントが有効になってしまう。取り急ぎ Delite で対応。原因はまた後程突き止める
-
-9. Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）
-
-10. Crashlytics(アプリリリース後、Crashlytics の導入から)
-
-テストクラッシュ送信、Enter/Exit 付近の非致命ログ確認
-
 # 9. Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）について
 
 ## 全体像: 案 1 → 審査出し → 案 2
@@ -394,33 +339,31 @@ env.EXPO_PUBLIC_ENABLE_DEV_SWITCH は 設定しない か "0"
 
 ---
 
-### A-4. v1 の Google Play 提出フロー
+A-4 進捗まとめ
 
-#### A-4-1. ビルドとバージョン管理
+A-4-1. ビルドまわりの最終チェック（ローカル）
 
-- [ ] app.json / app.config の version / versionCode を更新
-- [ ] EAS Build:
-  - [ ] Android AAB を production 用プロファイルでビルド
-  - [ ] 実機で最終確認（APK か internal track 経由）
+実質 OK 扱いで問題ない状態です。
 
-#### A-4-2. Play Console 側の設定
+ローカル環境は今回の署名問題の影響を受けておらず、EAS でのビルドも通っているので、「リリースを止めるレベルのビルド問題」は残っていません。
 
-- [ ] アプリの説明文・スクリーンショットの更新
-- [ ] Data Safety フォーム:
-  - [ ] 位置情報（foreground / background）利用の目的を整理
-  - [ ] ジオフェンス・出席管理の用途として記載
-- [ ] パーミッション説明:
-  - [ ] ACCESS_FINE_LOCATION / ACCESS_COARSE_LOCATION
-  - [ ] ACCESS_BACKGROUND_LOCATION
-  - [ ] FOREGROUND_SERVICE_LOCATION 等がある場合の説明
+A-4-2. EAS で本番 AAB をビルド ✅ 完了
 
-#### A-4-3. 審査提出
+eas build --platform android --profile production で、本番用パッケージ
+com.kenta0015.geoattendance の AAB を作成済み。
 
-- [ ] テストトラック（internal または closed）で AAB をアップロード
-- [ ] リリースノートに v1 の範囲を簡潔に記載
-- [ ] 審査へ送信
+Keystore も Play Console 側と整合するように設定済み。
 
-ここまでで「案 1 ベースの v1 をストアへ提出」までを完了とする。
+A-4-3. 内部テストトラックでの最終確認 ✅ 完了
+
+内部テストトラック v1-internal に versionCode 2 の .aab をアップロード済み。
+
+端末のアプリ情報で
+App installed from Google Play Store
+com.kenta0015.geoattendance.internal / version 1.0.0
+を確認済み。
+
+そのビルドを実際に端末にインストールして、ざっと機能チェック → 「全体的に OK」とのこと。
 
 ---
 
@@ -745,9 +688,9 @@ DevRoleBadge を出すかどうかを決めている。
 2. Dev ロール切り替えを 復活させる（開発モード）
    やること
 
-3 ファイルとも、enableDev を 環境依存の式に戻す：
+4 ファイルとも、enableDev を 環境依存の式に戻す：
 
-const enableDev =
+const enableDev = ※enableDev=false; から　 enableDev= にする
 (typeof **DEV** !== "undefined" && **DEV**) ||
 process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
 
@@ -774,7 +717,7 @@ History / Organize は Attendee / Organizer 両方の UI を切り替えて確�
 
 const enableDev = false;
 
-（\_layout.tsx, EventsList.tsx, organize/index.tsx の 3 か所）
+（\_layout.tsx,(tabs)/\_layout.txs ,EventsList.tsx, organize/index.tsx の 4 か所）
 
 挙動
 
@@ -796,7 +739,7 @@ Organize …「イベント作成＋ Organizer 用 Recent events」UI
 
 4. 切り替えるときのワークフロー
 
-変更したいモードに合わせて、上の通り 3 ファイルの enableDev を揃える
+変更したいモードに合わせて、上の通り 4 ファイルの enableDev を揃える
 
 expo start -c で一度キャッシュをクリアして再起動すると確実
 

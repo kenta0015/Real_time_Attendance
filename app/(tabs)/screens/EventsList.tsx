@@ -32,7 +32,7 @@ import { formatRangeInVenueTZ, maybeLocalHint } from "../../../src/utils/timezon
 type Role = "organizer" | "attendee";
 const ROLE_KEY = "rta_dev_role";
 
-const enableDev = false;
+const enableDev =
   (typeof __DEV__ !== "undefined" && __DEV__) ||
   process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
 
