@@ -19,7 +19,7 @@ export const unstable_settings = { initialRouteName: "join" };
 installGlobalLogger();
 
 // Dev / production switch (shared policy)
-const enableDev =  false;
+const enableDev =
   (typeof __DEV__ !== "undefined" && __DEV__) ||
   process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
 

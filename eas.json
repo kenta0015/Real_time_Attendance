@@ -5,11 +5,11 @@
   },
   "build": {
     "preview": {
-      "android": { "buildType": "apk" },
+      "android": { "buildType": "app-bundle" },
       "env": { "APP_ENV": "internal" },
       "channel": "internal",
       "developmentClient": false,
-      "distribution": "internal"
+      "distribution": "store"
     },
     "internal": {
       "android": { "buildType": "app-bundle" },

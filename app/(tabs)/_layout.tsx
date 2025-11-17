@@ -8,7 +8,7 @@ import HardBoundary from "../../components/HardBoundary";
 export const unstable_settings = { initialRouteName: "events" };
 
 const ROLE_KEY = "rta_dev_role";
-const enableDev =  false;
+const enableDev = 
   (typeof __DEV__ !== "undefined" && __DEV__) ||
   process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
 
