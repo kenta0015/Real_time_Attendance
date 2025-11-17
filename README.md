@@ -150,7 +150,9 @@ If you want to run the app locally with your own backend, here is the rough setu
 git clone https://github.com/your-username/geoattend.git
 cd geoattend
 npm install
-# or: yarn
+or: yarn
+
+```
 
 ### 2. Configure environment variables
 
@@ -204,14 +206,17 @@ If you run the app locally with your own Supabase project, you can test both org
 ### Suggested demo flow
 
 1. **Sign up and sign in**
+
    - Create a user account via the app (Supabase Auth).
 
 2. **Create an event (organizer side)**
+
    - Create a new event with date, time, and location.
    - Set a geofence radius around the meeting point.
    - Open the “Show QR” screen for that event.
 
 3. **Join and check in (attendee side)**
+
    - On another device (or another account), open the app.
    - Use the invite flow or the “Scan QR” option to join the event.
    - When you scan the organizer’s QR code near the event location, the app:
@@ -229,19 +234,23 @@ If you run the app locally with your own Supabase project, you can test both org
 ## Current status & limitations
 
 - **Platform focus:**
+
   - Primarily tested on Android devices.
   - iOS support has not been the main focus yet, and behavior may differ, especially around location permissions.
 
 - **Distribution:**
+
   - The app is currently distributed via the Google Play internal testing track.
   - It is not yet published as a public production app.
 
 - **Location & geofencing:**
+
   - Check-ins rely on the device’s GPS accuracy and OS location settings.
   - In dense urban areas or with strict battery optimization, location updates may be slower or less accurate.
   - This app is designed for small events and running groups, not for strict legal time-and-attendance compliance.
 
 - **Scale:**
+
   - The app is designed and tested for small teams and clubs, not for very large organizations or thousands of concurrent users.
 
 - **Backend assumptions:**
@@ -274,4 +283,28 @@ You are welcome to:
 
 If you plan to reuse major parts of this app in a commercial or production product,
 please contact me first.
+
+```
+
+## Screenshots
+
+**Organizer – event dashboard & history**
+
+![Organizer event history](screenshots/01-organizer-history.png)
+
+**Organizer – create geofenced event**
+
+![Create event](screenshots/02-create-event.png)
+
+**Organizer – show rotating QR code for check-in**
+
+![Show QR code](screenshots/03-show-qr.png)
+
+**Attendee – event detail with GPS check-in**
+
+![Attendee event detail](screenshots/04-attendee-event-detail.png)
+
+**Attendee – personal attendance history**
+
+![Attendee history](screenshots/05-attendee-history.png)
 ```
