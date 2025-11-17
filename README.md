@@ -284,8 +284,6 @@ You are welcome to:
 If you plan to reuse major parts of this app in a commercial or production product,
 please contact me first.
 
-```
-
 ## Screenshots
 
 **Organizer – event dashboard & history**
@@ -307,4 +305,3 @@ please contact me first.
 **Attendee – personal attendance history**
 
 ![Attendee history](screenshots/05-attendee-history.png)
-```
