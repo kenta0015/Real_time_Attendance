@@ -388,6 +388,36 @@ com.kenta0015.geoattendance.internal / version 1.0.0
     - QR スキャン入口（attend/scan）
 - [ ] 既存の招待トークン（join フロー）とどう組み合わせるかの案をまとめる
 
+### B-1 で決めたこと（案）
+
+Register 画面
+
+必須項目：Display name + Role
+
+Skip はナシ
+
+「登録済み」の定義
+
+user_profiles に存在し、display_name と role が埋まっている。
+
+起動フロー
+
+user_profiles.role が無ければ必ず /register
+
+あれば Organizer / Attendee のホームへ直行
+
+ホーム画面のイメージ
+
+Organizer：自分が主催するイベントの Today/Upcoming 一覧を起点に、Live/QR/Invite へ飛べる
+
+Attendee：自分の My Events を起点に、Scan への導線を常に見せる
+
+招待トークンとの組み合わせ
+
+Register 前に招待から来た場合は、招待内容に応じて role 初期値を決める
+
+Register 後は role は変えず、イベントとの関係だけを追加する
+
 ### B-2. データモデル案
 
 - [ ] Supabase 側に `user_profile.role` などのカラム追加案を整理
@@ -396,6 +426,37 @@ com.kenta0015.geoattendance.internal / version 1.0.0
 - [ ] ローカル保存との役割分担を決める
   - [ ] 本当のソースオブトゥルースは Supabase か
   - [ ] 端末ごとの一時フラグとして AsyncStorage を使うか
+
+###B-2 で「決まったこと」要約
+
+user_profiles.role（text）を追加し、値は "organizer" / "attendee" の 2 種類。
+
+既存ユーザーはすべて "organizer" で埋める（初期マイグレーション）。既存ユーザーは一旦すべて "organizer" として扱う。新規ユーザー：Register 経由で role を必ず埋める（将来の B/C フェーズで実装）
+
+グローバルロールのソース・オブ・トゥルースは Supabase 側。
+AsyncStorage はあくまでキャッシュ／DEV override 用。
+
+有効ロールの解決は：
+
+本番：effectiveRole = user_profiles.role
+
+DEV：effectiveRole = devRoleOverride ?? user_profiles.role
+
+public.user_profile に以下を追加：
+
+display_name text
+
+role text（'organizer' / 'attendee'）
+
+既存ユーザーは一括で：
+
+update public.user_profile set role = 'organizer' where role is null;
+
+将来的に：
+
+role に NOT NULL + CHECK 制約
+
+display_name も Register 実装が固まったら必須化を検討
 
 ### B-3. ルーティング方針
 
@@ -412,6 +473,34 @@ com.kenta0015.geoattendance.internal / version 1.0.0
     - My Events / Scan / Profile 等、シンプルな構成
 
 ---
+
+### B-3 の結論としては、こんな感じで固定しておいてよさそう：
+
+起動ゲートを 1 箇所にまとめる
+
+app/index.tsx（またはトップ \_layout.tsx）で、
+
+Supabase Auth → user_profile.role を取得
+
+effectiveRole を決める
+
+本番ビルドでは：
+
+effectiveRole = user_profile.role 固定
+
+'organizer' → ORGANIZER_HOME_ROUTE
+
+'attendee' → ATTENDEE_HOME_ROUTE
+
+DEV ビルドでは：
+
+effectiveRole = devOverrideRole ?? user_profile.role
+
+これまでの DEV Role 切り替え UI をこの devOverrideRole に接続するだけで、
+Organizer / Attendee UI の切り替えを維持できる。
+
+Organizer / Attendee の中身（タブ構成や画面遷移）は 既存のものを流用し、
+「入り口だけ user_profile.role から自動で振り分ける」変更にとどめる。
 
 ## フェーズ C: v1 公開後に案 2 を実装して v1.1 としてリリース
 
@@ -448,18 +537,17 @@ com.kenta0015.geoattendance.internal / version 1.0.0
 
 # ① どの画面が Session / Guest を参照しているか
 
-| 画面 / ルート                             | 役割                                       | 参照 ID                                                             | 根拠（主なファイル）                                                                                                |
-| ----------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **/join**                                 | サインイン／トークン Join                  | **Session**（`supabase.auth.user.id`）※DEV トークン書き換え時に使用 | `app/join.tsx`（`supabase.auth.signIn…`, `waitForSessionUserId`）                                                   |
-| **/(tabs)/events**（タブ「History」）     | 履歴一覧（作成/参加の集約）                | **Guest**（端末ローカルの擬似 UID）                                 | `app/(tabs)/events.tsx` → `screens/EventsList.tsx`（`getGuestId()`, `getGuestIdShort()`）                           |
-| **/(tabs)/organize**（タブ「Organize」）  | イベント作成＆最近のイベント表示           | **Guest**（作成者 `created_by` に使用）                             | `app/(tabs)/organize/index.tsx`（`createdBy = await getGuestId()` → `createEvent({ p_created_by: createdBy, … })`） |
-| **/(tabs)/organize/events/[id]**          | イベント詳細（参加者側のチェックイン含む） | **Guest**（出席 `attendance` 挿入時の `user_id`）                   | `app/(tabs)/organize/events/[id].tsx`（`user_id: await getGuestId()`）                                              |
-| **/(tabs)/organize/events/[id]/checkin**  | 主催者のチェックインリスト                 | **ID 不要**（ユーザー ID は使わず、eventId で集計）                 | `app/(tabs)/organize/events/[id]/checkin.tsx`（eventId ベースの一覧・集計）                                         |
-| **/(tabs)/organize/events/[id]/invite**   | 招待用情報                                 | **ID 不要**（eventId のみ）                                         | `app/(tabs)/organize/events/[id]/invite.tsx`                                                                        |
-| **/(tabs)/organize/events/[id]/settings** | イベント設定                               | **ID 不要**（eventId のみ）                                         | `app/(tabs)/organize/events/[id]/settings.tsx`                                                                      |
-| **/(tabs)/organize/admin/[eventId]/live** | Live 管理（リダイレクト）                  | **ID 不要**（eventId のみ）                                         | `app/(tabs)/organize/admin/[eventId]/live.tsx`（`/organize/events/${eventId}/live` へリダイレクト）                 |
-| **/(tabs)/profile**                       | 現在ロール／Guest ID 表示                  | **Guest**（表示＆トグル）                                           | `app/(tabs)/profile/index.tsx`（`useRoleStore`, `getGuestId` の表示）                                               |
-| **/(tabs)/debug**                         | セッション/環境の可視化                    | **Session**（表示）※動作は ID 非依存                                | `app/(tabs)/debug.tsx`（`supabase.auth.getSession()` 表示）                                                         |
+| 画面 / ルート                             | 役割                                       | 参照 ID                                             | 根拠（主なファイル）                                                                                                |
+| ----------------------------------------- | ------------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **/(tabs)/events**（タブ「History」）     | 履歴一覧（作成/参加の集約）                | **Guest**（端末ローカルの擬似 UID）                 | `app/(tabs)/events.tsx` → `screens/EventsList.tsx`（`getGuestId()`, `getGuestIdShort()`）                           |
+| **/(tabs)/organize**（タブ「Organize」）  | イベント作成＆最近のイベント表示           | **Guest**（作成者 `created_by` に使用）             | `app/(tabs)/organize/index.tsx`（`createdBy = await getGuestId()` → `createEvent({ p_created_by: createdBy, … })`） |
+| **/(tabs)/organize/events/[id]**          | イベント詳細（参加者側のチェックイン含む） | **Guest**（出席 `attendance` 挿入時の `user_id`）   | `app/(tabs)/organize/events/[id].tsx`（`user_id: await getGuestId()`）                                              |
+| **/(tabs)/organize/events/[id]/checkin**  | 主催者のチェックインリスト                 | **ID 不要**（ユーザー ID は使わず、eventId で集計） | `app/(tabs)/organize/events/[id]/checkin.tsx`（eventId ベースの一覧・集計）                                         |
+| **/(tabs)/organize/events/[id]/invite**   | 招待用情報                                 | **ID 不要**（eventId のみ）                         | `app/(tabs)/organize/events/[id]/invite.tsx`                                                                        |
+| **/(tabs)/organize/events/[id]/settings** | イベント設定                               | **ID 不要**（eventId のみ）                         | `app/(tabs)/organize/events/[id]/settings.tsx`                                                                      |
+| **/(tabs)/organize/admin/[eventId]/live** | Live 管理（リダイレクト）                  | **ID 不要**（eventId のみ）                         | `app/(tabs)/organize/admin/[eventId]/live.tsx`（`/organize/events/${eventId}/live` へリダイレクト）                 |
+| **/(tabs)/profile**                       | 現在ロール／Guest ID 表示                  | **Guest**（表示＆トグル）                           | `app/(tabs)/profile/index.tsx`（`useRoleStore`, `getGuestId` の表示）                                               |
+| **/(tabs)/debug**                         | セッション/環境の可視化                    | **Session**（表示）※動作は ID 非依存                | `app/(tabs)/debug.tsx`（`supabase.auth.getSession()` 表示）                                                         |
 
 参考：Guest ID の実体は stores/session.ts のローカル永続（AsyncStorage）で、Supabase の Session UID とは独立です。
 
