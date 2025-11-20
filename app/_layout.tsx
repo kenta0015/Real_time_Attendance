@@ -6,14 +6,14 @@ import { Stack } from "expo-router";
 import * as Notifications from "expo-notifications";
 import * as Updates from "expo-updates";
 
-// ★ 最上段で必ず読み込む（超早期ロガー）
+// Ultra-early logger
 import { installGlobalLogger } from "../lib/logger";
 
 import DevRoleBadge from "../components/DevRoleBadge";
 import PermissionsGate from "../components/PermissionsGate";
 import ToastHost from "../components/ToastHost";
 
-export const unstable_settings = { initialRouteName: "join" };
+export const unstable_settings = { initialRouteName: "index" };
 
 // Ultra-early
 installGlobalLogger();
@@ -40,10 +40,8 @@ export default function RootLayout() {
       Notifications.setNotificationCategoryAsync?.("default", []);
     }
 
-    // ==== Updates 可視化（チャネル/ランタイム/直近Updateなど）====
     (async () => {
       try {
-        // SDK 50+ の Updates API
         const ch = Updates.channel ?? "(unknown)";
         const rv = Updates.runtimeVersion ?? "(unknown)";
         const id = Updates.updateId ?? "(none)";
@@ -52,7 +50,6 @@ export default function RootLayout() {
         console.info("[updates] runtimeVersion:", rv);
         console.info("[updates] updateId:", id, "embeddedLaunch:", embedded);
 
-        // 追加診断
         const st = await Updates.checkForUpdateAsync().catch(() => null);
         if (st) console.info("[updates] checkForUpdate:", st);
       } catch (e) {
@@ -60,9 +57,7 @@ export default function RootLayout() {
       }
     })();
 
-    // ==== React Navigation 由来の警告も必ず捕捉 ====
-    // LogBox は抑制ではなく “見逃し”を防ぐために既定のまま。ここでは念のため無視ルールなし。
-    LogBox.ignoreLogs([]); // 何も無視しない
+    LogBox.ignoreLogs([]);
   }, []);
 
   useEffect(() => {
