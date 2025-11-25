@@ -1,123 +1,15 @@
 import { Tabs } from "expo-router";
-import { Platform, DeviceEventEmitter } from "react-native";
-import { useEffect, useState } from "react";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Platform } from "react-native";
+import { useEffect } from "react";
 import * as KeepAwake from "expo-keep-awake";
 import HardBoundary from "../../components/HardBoundary";
+import { useEffectiveRole, devSwitchEnabled } from "../../stores/devRole";
 
 export const unstable_settings = { initialRouteName: "events" };
 
-const ROLE_KEY = "rta_dev_role";
-const enableDev = 
-  (typeof __DEV__ !== "undefined" && __DEV__) ||
-  process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+const enableDev = devSwitchEnabled();
 
 console.log("[tabs/_layout] module loaded. enableDev =", enableDev);
-
-function useDevRole(): "organizer" | "attendee" {
-  const [role, setRole] = useState<"organizer" | "attendee">("organizer");
-
-  useEffect(() => {
-    console.log("[useDevRole] effect start. enableDev =", enableDev);
-
-    // In production (enableDev === false), always force "organizer"
-    if (!enableDev) {
-      console.log("[useDevRole] enableDev is false. Forcing role=organizer");
-      setRole("organizer");
-      return;
-    }
-
-    const applyRoleFromValue = (value: unknown) => {
-      console.log("[useDevRole] applyRoleFromValue payload =", value);
-
-      let next: unknown = value;
-
-      // Support payloads like { role: "attendee" }
-      if (next && typeof next === "object") {
-        const obj = next as { role?: unknown };
-        if (typeof obj.role === "string") {
-          console.log("[useDevRole] detected object payload with role field:", obj.role);
-          next = obj.role;
-        }
-      }
-
-      if (next === "attendee" || next === "organizer") {
-        console.log("[useDevRole] accepting role =", next);
-        AsyncStorage.setItem(ROLE_KEY, next as string).catch((e) => {
-          console.log("[useDevRole] AsyncStorage.setItem error:", String(e));
-        });
-        setRole(next);
-        return;
-      }
-
-      console.log(
-        "[useDevRole] unknown payload. Reloading from AsyncStorage. payload =",
-        next
-      );
-
-      // Fallback: reload from AsyncStorage if payload is missing or unknown
-      (async () => {
-        try {
-          const stored = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-          console.log("[useDevRole] fallback read stored =", stored);
-          if (stored === "attendee" || stored === "organizer") {
-            setRole(stored);
-          } else {
-            setRole("organizer");
-          }
-        } catch (e) {
-          console.log("[useDevRole] fallback read error:", String(e));
-          setRole("organizer");
-        }
-      })();
-    };
-
-    // Initial load from AsyncStorage
-    const read = async () => {
-      try {
-        const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-        console.log("[useDevRole] initial AsyncStorage ROLE_KEY =", v);
-        applyRoleFromValue(v);
-      } catch (e) {
-        console.log("[useDevRole] initial read error:", String(e));
-        setRole("organizer");
-      }
-    };
-    read();
-
-    // Newer event name used across app
-    console.log("[useDevRole] subscribing to rta_role_changed");
-    const subChanged = DeviceEventEmitter.addListener(
-      "rta_role_changed",
-      (payload) => {
-        console.log("[useDevRole] event rta_role_changed received. payload =", payload);
-        applyRoleFromValue(payload);
-      }
-    );
-
-    // Backward compatibility for legacy emitters
-    console.log("[useDevRole] subscribing to rta:set-role");
-    const subLegacy = DeviceEventEmitter.addListener(
-      "rta:set-role",
-      (payload) => {
-        console.log("[useDevRole] event rta:set-role received. payload =", payload);
-        applyRoleFromValue(payload);
-      }
-    );
-
-    return () => {
-      console.log("[useDevRole] cleanup: removing role listeners");
-      subChanged.remove();
-      subLegacy.remove();
-    };
-  }, []);
-
-  useEffect(() => {
-    console.log("[useDevRole] role state changed =>", role, "enableDev =", enableDev);
-  }, [role]);
-
-  return role;
-}
 
 // --- keep-awake (fail-safe) ---
 async function safeKeepAwake() {
@@ -134,7 +26,7 @@ async function safeKeepAwake() {
 }
 
 export default function TabLayout() {
-  const role = useDevRole();
+  const role = useEffectiveRole();
 
   useEffect(() => {
     console.log("[TabLayout] mounted. enableDev =", enableDev);

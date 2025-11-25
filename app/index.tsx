@@ -1,7 +1,13 @@
 // app/index.tsx
 import React, { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  StyleSheet,
+  View,
+  DeviceEventEmitter,
+} from "react-native";
 import { useRouter } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../lib/supabase";
 import {
   useDevRoleStore,
@@ -15,6 +21,25 @@ type UserProfileRow = {
   display_name?: string | null;
   role?: Role | null;
 };
+
+const ROLE_KEY = "rta_dev_role";
+
+async function syncRoleSideEffects(role: Role) {
+  try {
+    await AsyncStorage.setItem(ROLE_KEY, role);
+  } catch (e) {
+    console.warn(
+      "[index] failed to persist role to AsyncStorage:",
+      String(e)
+    );
+  }
+
+  try {
+    DeviceEventEmitter.emit("rta_role_changed", { role });
+  } catch (e) {
+    console.warn("[index] failed to emit rta_role_changed:", String(e));
+  }
+}
 
 export default function Index() {
   const router = useRouter();
@@ -40,6 +65,7 @@ export default function Index() {
         if (!uid) {
           console.info("[index] no session user -> /join");
           if (!mounted) return;
+
           setServerRole(null);
           router.replace("/join");
           return;
@@ -63,6 +89,7 @@ export default function Index() {
         if (!profile) {
           console.info("[index] user_profile missing -> /register");
           if (!mounted) return;
+
           setServerRole(null);
           router.replace("/register");
           return;
@@ -78,6 +105,7 @@ export default function Index() {
             "[index] user_profile missing display_name -> /register"
           );
           if (!mounted) return;
+
           setServerRole(null);
           router.replace("/register");
           return;
@@ -87,6 +115,7 @@ export default function Index() {
         if (profile.role !== "organizer" && profile.role !== "attendee") {
           console.info("[index] user_profile has invalid role -> /register");
           if (!mounted) return;
+
           setServerRole(null);
           router.replace("/register");
           return;
@@ -97,22 +126,32 @@ export default function Index() {
 
         if (!mounted) return;
 
-        // 3) Push role into global store (source of truth = Supabase)
+        // 3) Sync role to local dev-role infra (AsyncStorage + event)
+        await syncRoleSideEffects(effectiveRole);
+
+        // 4) Push role into global store (source of truth = Supabase)
         setServerRole(effectiveRole);
 
-        // 4) In dev, restore local override (optional)
+        // 5) In dev, restore local override (optional)
         if (devSwitchEnabled()) {
           restoreDevRoleOverride().catch((e) => {
-            console.warn("[index] restoreDevRoleOverride error:", String(e));
+            console.warn(
+              "[index] restoreDevRoleOverride error:",
+              String(e)
+            );
           });
         }
 
-        // 5) Go to main tabs (Events as initial)
-        console.info("[index] redirect -> /(tabs) with role =", effectiveRole);
-        router.replace("/(tabs)");
+        // 6) Go to main tabs (Events as initial)
+        console.info(
+          "[index] redirect -> /(tabs)/events with role =",
+          effectiveRole
+        );
+        router.replace("/(tabs)/events");
       } catch (e) {
         console.warn("[index] bootstrap fatal error:", String(e));
         if (!mounted) return;
+
         setServerRole(null);
         router.replace("/join");
       } finally {

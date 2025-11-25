@@ -1,4 +1,4 @@
-// app/organize/admin/[eventId]/live.tsx
+// app/(tabs)/organize/admin/[eventId]/live.tsx
 import React, { useEffect } from "react";
 import { View, ActivityIndicator, Text, StyleSheet } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
