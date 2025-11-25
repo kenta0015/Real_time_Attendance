@@ -8,7 +8,9 @@ import {
   ActivityIndicator,
   TextInput,
   Alert,
+  DeviceEventEmitter,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import { supabase } from "../lib/supabase";
 import { useDevRoleStore, type Role } from "../stores/devRole";
@@ -18,6 +20,25 @@ type UserProfileRow = {
   display_name?: string | null;
   role?: Role | null;
 };
+
+const ROLE_KEY = "rta_dev_role";
+
+async function syncRoleSideEffects(role: Role) {
+  try {
+    await AsyncStorage.setItem(ROLE_KEY, role);
+  } catch (e) {
+    console.warn(
+      "[register] failed to persist role to AsyncStorage:",
+      String(e)
+    );
+  }
+
+  try {
+    DeviceEventEmitter.emit("rta_role_changed", { role });
+  } catch (e) {
+    console.warn("[register] failed to emit rta_role_changed:", String(e));
+  }
+}
 
 export default function RegisterScreen() {
   const router = useRouter();
@@ -141,6 +162,9 @@ export default function RegisterScreen() {
         );
         return;
       }
+
+      // Sync role to local dev-role infra (AsyncStorage + event)
+      await syncRoleSideEffects(selectedRole);
 
       // Update global role (source of truth = Supabase, but we mirror it locally)
       setServerRole(selectedRole);

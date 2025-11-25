@@ -8,6 +8,7 @@ import * as Updates from "expo-updates";
 
 // Ultra-early logger
 import { installGlobalLogger } from "../lib/logger";
+import { devSwitchEnabled } from "../stores/devRole";
 
 import DevRoleBadge from "../components/DevRoleBadge";
 import PermissionsGate from "../components/PermissionsGate";
@@ -19,9 +20,7 @@ export const unstable_settings = { initialRouteName: "index" };
 installGlobalLogger();
 
 // Dev / production switch (shared policy)
-const enableDev =
-  (typeof __DEV__ !== "undefined" && __DEV__) ||
-  process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+const enableDev = devSwitchEnabled();
 
 console.info("[dev-switch] enableDev =", enableDev);
 

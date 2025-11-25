@@ -11,23 +11,14 @@ import {
   ScrollView,
   ActivityIndicator,
   ToastAndroid,
-  DeviceEventEmitter,
   Linking,
   RefreshControl,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import { useRouter, useLocalSearchParams } from "expo-router";
-import { useFocusEffect } from "@react-navigation/native";
 import { supabase } from "../../../lib/supabase";
 import { getGuestId } from "../../../stores/session";
-
-type Role = "organizer" | "attendee";
-const ROLE_KEY = "rta_dev_role";
-
-const enableDev =
-  (typeof __DEV__ !== "undefined" && __DEV__) ||
-  process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+import { useEffectiveRole, type Role } from "../../../stores/devRole";
 
 type GroupRow = { id: string; name: string | null; description?: string | null };
 type EventRow = {
@@ -44,7 +35,8 @@ type EventRow = {
 };
 
 const nowIso = () => new Date().toISOString();
-const plusHoursIso = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
+const plusHoursIso = (h: number) =>
+  new Date(Date.now() + h * 3600_000).toISOString();
 
 async function getEffectiveUserId(): Promise<string> {
   try {
@@ -60,7 +52,8 @@ export default function OrganizeIndexScreen() {
   const params = useLocalSearchParams<{ gid?: string }>();
   const passedGid = typeof params.gid === "string" ? params.gid : undefined;
 
-  const [role, setRole] = useState<Role>("organizer");
+  const role: Role = useEffectiveRole();
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [groups, setGroups] = useState<GroupRow[]>([]);
@@ -84,41 +77,15 @@ export default function OrganizeIndexScreen() {
     else Alert.alert("Info", msg);
   };
 
-  const loadRole = useCallback(async () => {
-    try {
-      if (!enableDev) {
-        console.log("[OrganizeIndex] loadRole -> force organizer (enableDev=false)");
-        setRole("organizer");
-        return;
-      }
-      const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-      const r: Role = v === "attendee" ? "attendee" : "organizer";
-      console.log("[OrganizeIndex] loadRole ->", r);
-      setRole(r);
-    } catch (e) {
-      console.log("[OrganizeIndex] loadRole error", e);
-      setRole("organizer");
-    }
-  }, []);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadRole();
-      if (!enableDev) {
-        console.log("[OrganizeIndex] focus -> skip role_changed listener (enableDev=false)");
-        return;
-      }
-      const sub = DeviceEventEmitter.addListener("rta_role_changed", loadRole);
-      return () => sub.remove();
-    }, [loadRole])
-  );
-
   const fetchBootstrap = useCallback(async () => {
     try {
       setError(null);
       setLoading(true);
       const [gr, ev] = await Promise.all([
-        supabase.from("groups").select("id, name, description").order("name", { ascending: true }),
+        supabase
+          .from("groups")
+          .select("id, name, description")
+          .order("name", { ascending: true }),
         supabase
           .from("events")
           .select(
@@ -133,7 +100,8 @@ export default function OrganizeIndexScreen() {
       setEvents(ev.data ?? []);
       if (!groupId) {
         const prefer =
-          (passedGid && (gr.data ?? []).find((g) => g.id === passedGid)?.id) ||
+          (passedGid &&
+            (gr.data ?? []).find((g) => g.id === passedGid)?.id) ||
           (gr.data && gr.data[0]?.id) ||
           null;
         if (prefer) setGroupId(prefer);
@@ -177,7 +145,9 @@ export default function OrganizeIndexScreen() {
         Alert.alert("Location", "Permission denied");
         return;
       }
-      const pos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const pos = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
       setLat(String(pos.coords.latitude));
       setLng(String(pos.coords.longitude));
       notify("Coordinates filled from current location");
@@ -188,7 +158,8 @@ export default function OrganizeIndexScreen() {
 
   const isIso = (s: string) => !Number.isNaN(Date.parse(s));
   const toNum = (s: string) => Number(s);
-  const inRange = (n: number, min: number, max: number) => Number.isFinite(n) && n >= min && n <= max;
+  const inRange = (n: number, min: number, max: number) =>
+    Number.isFinite(n) && n >= min && n <= max;
 
   const canSubmit = useMemo(() => {
     if (!groupId) return false;
@@ -206,7 +177,10 @@ export default function OrganizeIndexScreen() {
 
   const onCreate = async () => {
     if (!canSubmit) {
-      Alert.alert("Invalid form", "Fill group, times, lat/lng, radius, window.");
+      Alert.alert(
+        "Invalid form",
+        "Fill group, times, lat/lng, radius, window."
+      );
       return;
     }
     setSubmitting(true);
@@ -238,7 +212,12 @@ export default function OrganizeIndexScreen() {
 
   if (loading) {
     return (
-      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
+      <View
+        style={[
+          styles.container,
+          { justifyContent: "center", alignItems: "center" },
+        ]}
+      >
         <ActivityIndicator />
       </View>
     );
@@ -248,7 +227,9 @@ export default function OrganizeIndexScreen() {
     <ScrollView
       style={styles.container}
       contentContainerStyle={{ paddingBottom: 32 }}
-      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+      }
     >
       <Text style={styles.header}>Organize</Text>
 
@@ -279,7 +260,12 @@ export default function OrganizeIndexScreen() {
                     style={[styles.chip, active && styles.chipActive]}
                     onPress={() => setGroupId(item.id)}
                   >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                    <Text
+                      style={[
+                        styles.chipText,
+                        active && styles.chipTextActive,
+                      ]}
+                    >
                       {item.name ?? "(Untitled group)"}
                     </Text>
                   </TouchableOpacity>
@@ -290,7 +276,9 @@ export default function OrganizeIndexScreen() {
 
           <View style={{ height: 12 }} />
 
-          <Text style={styles.label}>Title (optional — server fills if blank)</Text>
+          <Text style={styles.label}>
+            Title (optional — server fills if blank)
+          </Text>
           <TextInput
             style={styles.input}
             placeholder="e.g. Math 101 — Quiz 2"
@@ -299,7 +287,9 @@ export default function OrganizeIndexScreen() {
           />
 
           <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>Start (UTC ISO)</Text>
+            <Text style={[styles.label, styles.rowLabel]}>
+              Start (UTC ISO)
+            </Text>
             <TouchableOpacity style={styles.btnSmall} onPress={useLocalNow}>
               <Text style={styles.btnSmallText}>Use local now</Text>
             </TouchableOpacity>
@@ -324,8 +314,13 @@ export default function OrganizeIndexScreen() {
           />
 
           <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>Venue lat / lng</Text>
-            <TouchableOpacity style={styles.btnSmall} onPress={useCurrentLocation}>
+            <Text style={[styles.label, styles.rowLabel]}>
+              Venue lat / lng
+            </Text>
+            <TouchableOpacity
+              style={styles.btnSmall}
+              onPress={useCurrentLocation}
+            >
               <Text style={styles.btnSmallText}>Use current location</Text>
             </TouchableOpacity>
           </View>
@@ -381,13 +376,19 @@ export default function OrganizeIndexScreen() {
           <View style={{ height: 12 }} />
           <TouchableOpacity
             disabled={!canSubmit || submitting}
-            style={[styles.btn, (!canSubmit || submitting) && styles.btnDisabled]}
+            style={[
+              styles.btn,
+              (!canSubmit || submitting) && styles.btnDisabled,
+            ]}
             onPress={onCreate}
           >
-            <Text style={styles.btnText}>{submitting ? "Creating..." : "Create"}</Text>
+            <Text style={styles.btnText}>
+              {submitting ? "Creating..." : "Create"}
+            </Text>
           </TouchableOpacity>
           <Text style={styles.helpSmall}>
-            You can type UTC ISO strings and lat/lng manually, or use the quick-fill buttons.
+            You can type UTC ISO strings and lat/lng manually, or use the
+            quick-fill buttons.
           </Text>
         </View>
       ) : null}
@@ -399,7 +400,9 @@ export default function OrganizeIndexScreen() {
         ) : (
           events.map((e) => (
             <View key={e.id} style={styles.eventItem}>
-              <Text style={styles.eventTitle}>{e.title ?? "(Untitled event)"}</Text>
+              <Text style={styles.eventTitle}>
+                {e.title ?? "(Untitled event)"}
+              </Text>
               <Text style={styles.meta}>
                 {e.start_utc ?? "—"} — {e.end_utc ?? "—"}
               </Text>
@@ -426,7 +429,9 @@ export default function OrganizeIndexScreen() {
                       onPress={() =>
                         Linking.openURL(
                           `https://maps.google.com/?q=${encodeURIComponent(
-                            e.location_name ? `${e.location_name} @ ${e.lat},${e.lng}` : `${e.lat},${e.lng}`
+                            e.location_name
+                              ? `${e.location_name} @ ${e.lat},${e.lng}`
+                              : `${e.lat},${e.lng}`
                           )}`
                         )
                       }
@@ -447,7 +452,9 @@ export default function OrganizeIndexScreen() {
                 {role === "organizer" ? (
                   <TouchableOpacity
                     style={[styles.btn, { paddingVertical: 10 }]}
-                    onPress={() => router.push(`/organize/events/${e.id}/live`)}
+                    onPress={() =>
+                      router.push(`/organize/events/${e.id}/live`)
+                    }
                   >
                     <Text style={styles.btnText}>LIVE (ORGANIZER)</Text>
                   </TouchableOpacity>
@@ -500,9 +507,18 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 10,
     backgroundColor: "white",
-    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+    fontFamily: Platform.select({
+      ios: "Menlo",
+      android: "monospace",
+      default: "monospace",
+    }),
   },
-  row: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
   rowLabel: { marginBottom: 6 },
   rowInput: { flex: 1 },
   btn: {

@@ -13,7 +13,7 @@ type TokenParts = {
   hash: string;
 };
 
-const AFTER_LOGIN_PATH = "/(tabs)/events";
+const AFTER_LOGIN_PATH = "/";
 
 function parseToken(raw?: string | null): TokenParts | null {
   if (!raw) return null;

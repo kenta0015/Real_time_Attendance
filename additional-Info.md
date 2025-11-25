@@ -533,6 +533,82 @@ Organizer / Attendee の中身（タブ構成や画面遷移）は 既存のも�
 - [ ] EAS Build で v1.1 用 AAB を作成
 - [ ] Play Console でアップデートとして提出
 
+### C-3：既存ユーザー＋ロールの扱いを決める
+
+ここは データ面の整理 としてやること：
+
+C-3-1: user_profile の既存レコードの方針決め
+
+role が NULL のユーザー → 一律 "organizer" にするのか
+
+それとも初回起動時に /register へ送るのか
+
+C-3-2: 「不完全プロフィール」の定義を確定
+
+例）display_name が空 OR role が空 → /register
+
+逆に「完成プロフィール」の条件も固定する
+
+※ ここは DB と仕様の話なので、コード変更は最小。
+
+### C-4：user_profile.role をアプリの「現在のロール」に配線する
+
+ここがさっき話していた「Attendee パスのテスト」が本当に意味を持つための部分です。
+
+C-4-1: 現在のロール管理の把握
+
+useDevRole（or それに相当する store/hook）
+
+app/(tabs)/\_layout.tsx（Tabs が role をどう使っているか）
+
+DevRoleBadge（黄色バッジが何を上書きしているか）
+
+C-4-2: 「サーバーロール」を一次ソースにする方針を決める
+
+serverRole（Supabase）＋ devOverride（開発用上書き）の関係を決める
+
+例：
+
+本番：serverRole だけを見る
+
+開発：serverRole を初期値として、バッジで一時的に上書き可能
+
+C-4-3: 実装
+
+index で取得した user_profile.role を、ロールストアに流し込む
+
+Tabs や EventsList, Profile が そのストア を見るように変更
+
+DevRoleBadge は「そのストアを一時的に上書きする」形に変更
+
+ここまで終わると、
+
+Supabase の user_profile.role = attendee に変える → 起動直後から Attendee UI
+
+が初めて成立します。
+
+### C-5：Organizer / Attendee のホーム動線の整理
+
+C-5-1: Organizer 起動時
+
+どのタブを初期表示にするか（現状どおり History/Events ベースで OK か）
+
+C-5-2: Attendee 起動時
+
+me/events を最初に出す／Organize タブを隠す などの方針を確定
+
+C-5-3: 実装・テスト
+
+Organizer と Attendee のそれぞれで、起動 → ホームが意図通りか確認
+
+## フェーズ D（あとでで OK）：Join / 招待トークンとの統合
+
+ここは B で方針だけ触れていた部分を、最後にまとめてやる想定。
+
+D-1: 「招待リンクから来た人」が Register をどう通過するか
+
+D-2: 既存の join フローと user_profile / role の整合性
+
 ---
 
 # ① どの画面が Session / Guest を参照しているか
@@ -742,99 +818,410 @@ Scan（Organizer）（/app/(tabs)/organize/events/[id]/scan.tsx）：戻る 1 �
 
 ### EventDetail 単体共通化：今回は手を付けない（後続タスク候補として据え置き）
 
-# 本番では enableDev = false」のルールを決める
+## Dev ロールスイッチ ON/OFF メモ（現行構成ベース）
 
-EXPO_PUBLIC_ENABLE_DEV_SWITCH をどこで管理しているかによりますが、基本はこんな方針にします：
+### 1. 役割分担の整理
 
-開発（ローカル / Dev Client / internal APK）
+stores/devRole.ts
 
-EXPO_PUBLIC_ENABLE_DEV_SWITCH=1
+devSwitchEnabled()
+→ 「Dev ロールスイッチ（バッジ＋ Debug タブ）を有効にするか？」の唯一のスイッチ
 
-Play Console に出す「本番用 AAB」
+useEffectiveRole()
+→ 実際に画面で使う role（organizer/attendee）を返す。
+Dev スイッチ ON のときはローカル override を反映、OFF のときは Supabase の role だけ使う設計。
 
-EXPO_PUBLIC_ENABLE_DEV_SWITCH=0
+app/\_layout.tsx
 
-# Dev ロール切り替えを出したい時／隠したい時」の切り替えメモ
+const enableDev = devSwitchEnabled();
 
-1. どこをいじればいいか
+enableDev が true のときだけ DevRoleBadge を表示。
 
-enableDev を使っているファイルは少なくともこの 4 つ：
+起動時ログに [dev-switch] enableDev = ... が出る。
 
-1.app/\_layout.tsx
+app/(tabs)/\_layout.tsx
 
-DevRoleBadge を出すかどうかを決めている。
+const enableDev = devSwitchEnabled();
 
-2.(tabs)/\_layout.txs
+useEffectiveRole() でタブの表示内容を切り替え。
 
-3.app/(tabs)/screens/EventsList.tsx（History タブ）
+enableDev が true のときだけ Debug タブに href が付き、
+role === "attendee" && !enableDev のとき Organize タブを非表示にする。
 
-4.app/(tabs)/organize/index.tsx（Organize タブ）
+### 2. Dev ロールスイッチを「完全 OFF」にする方法（本番想定）
 
-ルール：この 4 つの enableDev の値を必ず同じにする。
-これがずれると、「バッジは出ないけど中身は Attendee ロール」みたいなズレがまた起きます。
+目的：
 
-2. Dev ロール切り替えを 復活させる（開発モード）
-   やること
+DevRoleBadge 非表示
 
-4 ファイルとも、enableDev を 環境依存の式に戻す：
+Debug タブ非表示
 
-const enableDev = ※enableDev=false; から　 enableDev= にする
-(typeof **DEV** !== "undefined" && **DEV**) ||
-process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+Attendee は Organize タブにアクセスできない
 
-**DEV** === true の Expo Go では、自動的に Dev モード ON
+role は Supabase の user_profile のみで決まる（ローカル override 無効）
 
-本番ビルドでも EXPO_PUBLIC_ENABLE_DEV_SWITCH=1 を入れれば Dev モードを強制 ON にできる
+やること：
 
-挙動
+stores/devRole.ts を開く。
 
-DevRoleBadge が表示される
+devSwitchEnabled() を次のように固定する（メモ用の例）：
 
-Badge から Organizer / Attendee を切り替えると：
+export function devSwitchEnabled(): boolean {
+return false;
+}
 
-AsyncStorage("rta_dev_role") が更新される
+保存して、npx expo start -c でキャッシュクリア＋再起動。
 
-DeviceEventEmitter("rta_role_changed") → History / Organize がそれを拾ってロールを更新
+Metro ログで次を確認：
 
-History / Organize は Attendee / Organizer 両方の UI を切り替えて確認できる
+[dev-switch] enableDev = false が出ていること。
 
-3. Dev ロール切り替えを 一時的に隠す（本番想定モード）
-   やること
+実機で確認：
 
-3 ファイルとも、enableDev を 固定で false にする：
+画面右下などに DevRoleBadge が出ないこと。
 
-const enableDev = false;
+タブバーに Debug タブが出ないこと。
 
-（\_layout.tsx,(tabs)/\_layout.txs ,EventsList.tsx, organize/index.tsx の 4 か所）
+attendee アカウントでログインした場合、Organize タブが表示されない（またはタップできない）こと。
 
-挙動
+organizer アカウントでは Organize タブが表示され、通常通り使えること。
 
-DevRoleBadge が表示されない
+### 3. Dev ロールスイッチを「ON」にする方法（開発用）
 
-EventsList / Organize では：
+目的：
 
-enableDev === false の分岐で ロールを強制的に "organizer" にする
+DevRoleBadge を表示して、画面から Organizer / Attendee を切り替えて挙動を確認する。
 
-rta_role_changed のリスナーもスキップする
-→ 画面の「視点」は常に Organizer 固定
+Debug タブも一時的に表示して使えるようにする。
 
-つまり、
+やること：
 
-History …「Organizer 視点の履歴」UI
+stores/devRole.ts を開く。
 
-Organize …「イベント作成＋ Organizer 用 Recent events」UI
-のまま変わらない
+devSwitchEnabled() を一時的に次のようにする：
 
-4. 切り替えるときのワークフロー
+export function devSwitchEnabled(): boolean {
+return true;
+}
 
-変更したいモードに合わせて、上の通り 4 ファイルの enableDev を揃える
+（あとから環境変数ベースの式に戻すなら、ここを調整する）
 
-expo start -c で一度キャッシュをクリアして再起動すると確実
+保存して、npx expo start -c で再起動。
 
-Dev モード ON にした直後で挙動がおかしければ、DevRoleBadge から一度 Organizer / Attendee をタップして rta_dev_role をリセットする
+Metro ログで次を確認：
 
-これで、
+[dev-switch] enableDev = true が出ていること。
 
-開発中に切り替えて挙動確認したいとき → Dev モード（enableDev=式）
+実機で確認：
 
-審査・本番想定の挙動を見たいとき → Organizer 固定モード（enableDev=false）
+画面右下に DevRoleBadge が表示されること。
+
+Badge から Organizer / Attendee を切り替えたときに：
+
+History タブの文言（説明テキスト）が role に合わせて変わること。
+
+Organize タブの中身も role に応じて挙動が変わること（今は organizer だけが Create event を表示、attendee なら作成 UI は非表示など）。
+
+タブバーに Debug タブが表示されること。
+
+### 4. 将来の運用方針（メモだけ）
+
+ローカル開発：
+
+devSwitchEnabled() を true 固定、または **DEV** ベースの式にしておく。
+
+ストア提出用ビルド：
+
+devSwitchEnabled() を false 固定にしてビルドする。
+
+必要なら、あとで：
+
+devSwitchEnabled() の中で **DEV** や process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH を使う形に拡張する。
+
+## 12 人 ×14 日テスト
+
+### ■ 公式サイト
+
+サイト名：12 Testers
+
+URL：12testers.com
+12 testers
+
+運営：Remob Academy LTD（イギリス登録）
+Google Play
++1
+
+ここから申し込めば OK です。
+トップにでかく 「Test Your App For 14 Day ! 12 Testers !」 と出ているサイトです。
+12 testers
+
+### ■ 有料プラン名（12testers.com）
+
+全部「12 人のテスターが 14 日間テスト」がベースで、主に違うのはアプリサイズ・サポート内容です。
+12 testers
+
+-Starter Plan
+
+目安価格：$22.99 / app
+
+対象：アプリサイズ 1〜250MB
+
+内容：12 台の実機で 14 日間フルテスト
+
+-Pro Plan
+
+目安価格：$26.99 / app
+
+対象：アプリサイズ 1〜500MB
+
+Starter の内容＋
+
+AnyDesk でのリモートサポート
+
+提出プロセスのガイダンス付き
+
+-Bulk Plan
+
+目安価格：$34.99〜（複数アプリ向け）
+
+5 本以上まとめてテストしたい人向け
+
+-Business Plan
+
+目安価格：$59.99 / 10 apps（まとめ割）
+
+Ken 向けの現実的な選択肢：
+
+アプリ 1 本だけなら
+👉 Starter Plan（安くて十分）か
+👉 「サポート付きが安心なら」Pro Plan
+
+## unmatched root について
+
+1. 最初の症状（2 つあった）
+   (1) ロールが反映されない問題
+
+条件：Expo Go の「ストレージ削除 / Clear storage」後に起動
+
+フロー：
+
+/index → セッションなしなので /join へ
+
+/join で Organizer ユーザーとして Sign In
+
+そのままタブ画面に遷移するが、UI は Attendee 用になる
+
+DB 上では user_profile.role = "organizer" なのに、UI は attendee 扱いになっていた。
+
+原因
+
+/join でログイン成功後、user_profile を読まずに 直接タブへ遷移していた。
+
+useDevRoleStore.setServerRole() が一度も呼ばれず、serverRole が null のまま。
+
+useEffectiveRole() は
+ENABLE_DEV = false のため serverRole ?? "attendee" → "attendee" を返す。
+
+(2) Unmatched Route 画面
+
+フロー：アプリ起動 → /join でログイン → Sign In ボタンを押した直後 に
+黒背景の 「Unmatched Route / Page could not be found」 が表示される。
+
+Sitemap 画面を見ると、ルート一覧には
+
+index.tsx（/）
+
+(tabs)/\_layout.tsx
+
+events/[id].tsx（/events/[id]）
+
+register.tsx（/register）
+
+などが見える。
+
+ログには：
+
+[index] user_profile found. role = ...
+[index] redirect -> /(tabs) with role = ...
+
+の後に Unmatched Route が出ていた。
+
+2. ロール問題に対して行ったこと（join.tsx）
+   変更前
+
+join.tsx のログイン後の遷移先：
+
+定数：AFTER_LOGIN_PATH = "/(tabs)/events";
+
+Sign In 成功後：
+
+if (!tokenInUrl) {
+router.replace(AFTER_LOGIN_PATH);
+}
+
+sessionUserId を監視する auto-nav でも同じく router.replace(AFTER_LOGIN_PATH)。
+
+→ /index を通らないため、user_profile を読んで serverRole をセットする処理が一度も走らない。
+
+変更内容
+
+方針：ログイン後のルート初期化は /index に一元化する。
+
+AFTER_LOGIN_PATH を "/" に変更。
+
+Sign In 成功後も、sessionUserId を検知した auto-nav も、すべて router.replace("/") に変更。
+
+これで：
+
+/join でログイン成功
+
+いったん /（app/index.tsx）へ移動
+
+/index が Supabase から user_profile を取得し、setServerRole() を呼ぶ
+
+その後、タブへ遷移
+
+という流れになり、ロールの初期化処理が必ず実行されるようになった。
+
+結果
+
+Organizer ユーザー・Attendee ユーザーの両方で、
+
+Clear storage → 起動 → /join → Sign In
+
+期待どおり Organizer UI / Attendee UI が表示されることを確認。
+
+3. Unmatched Route 問題に対して行ったこと（index.tsx）
+   原因
+
+app/index.tsx の最後の遷移がこうなっていた：
+
+console.info("[index] redirect -> /(tabs) with role =", effectiveRole);
+router.replace("/(tabs)");
+
+/ (tabs) は expo-router の「グループ名」であり、実際の画面ではない。
+
+Expo Router 的には「/(tabs) というパスに対応するスクリーンが存在しない」状態。
+
+その結果：
+
+目的の画面にマッチせず
+
+NotFound 用のパス /--/ にフォールバック
+
+黒い Unmatched Route 画面が表示されていた。
+
+※ Sitemap に /events などは出ていたが、「ルートが / (tabs) だけ」のスクリーンは存在していなかった。
+
+変更内容
+
+行き先を「実在する画面」に変更：
+
+router.replace("/(tabs)") → router.replace("/(tabs)/events") に変更。
+
+/ (tabs)/events は、app/(tabs)/events.tsx に対応する実際の画面。
+
+expo-router では /events でも / (tabs)/events でも OK だが、少なくとも「スクリーン付きのパス」になる。
+
+結果
+
+Sign In 後の Unmatched Route 画面は消え、
+
+ログでも
+redirect -> /(tabs)/events with role = ... の後、正常に TabLayout と EventsList が描画されるようになった。
+
+4. まだ残っている WARN とその意味
+   (1) expo-notifications の WARN / ERROR
+   WARN `expo-notifications` functionality is not fully supported in Expo Go
+   ERROR expo-notifications: Android Push notifications ... was removed from Expo Go with SDK 53.
+
+内容：
+
+Expo Go では リモート Push 通知 がサポートされなくなった。
+
+Push をちゃんと使いたい場合は Dev Client（development build）を使ってね という案内。
+
+影響：
+
+位置情報や出欠機能、タブ UI、ロール切り替えには影響なし。
+
+Push 機能だけが Expo Go 上では動かない。
+
+対処タイミング：
+
+本当に Push を実装・テストする段階で、
+
+eas build --profile development --platform android
+
+Dev Client で起動
+
+その時点でこの WARN/ERROR は消える想定。
+
+現状：
+
+無視して OK （ログがうるさいだけの存在）。
+
+(2) [Layout children] の WARN
+WARN [Layout children]: No route named "organize/admin/[eventId]/live" exists in nested children: [...]
+
+内容：
+
+旧ルート organize/admin/[eventId]/live 向けに残しているレガシー画面（リダイレクト用）と
+
+タブの children 一覧との整合性チェックで、「この名前のルートが children に見当たらない」と警告している。
+
+影響：
+
+実際に使っているのは /organize/events/[id]/live 側。
+
+現在の UI / 機能には影響なし。
+
+将来やるなら：
+
+完全に整理したくなったタイミングで、
+
+Tabs.Screen name="organize/admin/[eventId]/live" を削除するか、
+
+レガシーファイル app/(tabs)/organize/admin/[eventId]/live.tsx を整理する。
+
+現状：
+
+致命ではなく、技術的負債寄りの WARN。急ぎではない。
+
+5. 将来同じような問題が起きたときのミニチェックリスト
+
+まず Sitemap を見る
+
+Unmatched Route が出たら、右下の「Sitemap」をタップ。
+
+現在のパスとルート一覧を確認。
+
+「飛ぼうとしているパス」がルート一覧に存在するかチェックする。
+
+index / join の遷移先を確認する
+
+セッションチェックや profile 読み込みをしている画面（今回なら /index）を特定。
+
+ログイン後に 必ずそこを経由する設計になっているか（router.replace("/") など）を確認。
+
+途中で直接タブや別画面に飛んでいないかを見る。
+
+expo-router のグループ名に注意
+
+app/(tabs)/... の (tabs) は URL に現れないグループ名。
+
+router.replace("/(tabs)") のように、グループだけのパスには飛ばないようにする。
+
+必ず実在するスクリーン（例：/events / / (tabs)/events）に飛ぶ。
+
+ログで流れを追う
+
+console.info で
+
+セッション有無
+
+user_profile の role
+
+router.replace の行き先
+
+を出しておくと、どこで何に飛んでいるか後から追いやすい。
