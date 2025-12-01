@@ -172,444 +172,185 @@ Start-Process "http://localhost:8081/status"
 & "$adb" -s $serial shell am start -W -a android.intent.action.VIEW `
 -d "rta://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081"
 
-# 9. Attendee/organizer roll の廃止（本番用としての廃止。Debug 用としては保管）について
+## アプリリリースと１２人テスト
 
-## 全体像: 案 1 → 審査出し → 案 2
+パッケージ名：com.kenta0015.geoattendance.internal
 
-- フェーズ A: 案 1 の実装完了 ＋ v1 を Google Play に提出
-- フェーズ B: 審査待ち期間に案 2 の設計・実装を進める（ローカル or 別ブランチ）
-- フェーズ C: v1 公開後に案 2 を載せた v1.1 をリリース
+内部テストトラック：versionCode 3 (1.0.0) までアップ済み
 
----
+アプリ自体は Google Play 経由でインストール・動作確認済み
 
-## フェーズ A: 案 1（DEV ロールを本番から隠す）＋ v1 審査出し
+ここに クローズドテスト + 12 Testers を重ねて、本番リリースに進むプランです。
+（Google の要件：クローズドテストで 12 人以上が 14 日間参加していること
+BuddyBoss
+）
 
-### A-1. 現状の安定確認とスコープ固定
+### フェーズ 1：クローズドテストトラックを作る
 
-- [ ] 位置打刻（GPS）と Enter/Exit の挙動を再確認
-  - [ ] Organizer 詳細画面から:
-    - [ ] GPS Check-in 実行
-    - [ ] Geofence ARM / DISARM
-  - [ ] History 画面で出席履歴が期待通りに反映されること
-- [ ] Event Delete ボタンの挙動を確認
-  - [ ] 対象イベントを削除
-  - [ ] 一覧から消えていること
-  - [ ] Geofence が DISARM されていること（ステータス確認）
+目標： 「クローズドテスト」で versionCode 3 のリリースを作成しておく。
 
-ここで「今の v1 の機能セット」を固定した前提で、Step 9（ロール廃止の最小修正）に入る。
+Play Console でアプリを開く
 
----
+左メニュー → 「テストとリリース > クローズドテスト」 に進む。
 
-### A-2. 案 1: DEV ロールを本番から隠す（Debug 用に保管）
+クローズドトラックを作成
 
-#### A-2-1. グローバル設定方針　完了
+まだトラックが無ければ「トラックを作成」→ 名前は closed-12testers などで OK。
 
-- [ ] 環境変数で「DEV ロールスイッチ」を制御する方針を明確化
+すでにあれば「トラックを管理」から入る。
 
-  - 例: `EXPO_PUBLIC_ENABLE_DEV_SWITCH`
-  - 本番ビルド:
-    - `EXPO_PUBLIC_ENABLE_DEV_SWITCH` を `"0"` または未設定にする
-  - 開発ビルド / internal チャンネル:
+新しいリリースを作成
 
-    - `EXPO_PUBLIC_ENABLE_DEV_SWITCH="1"` を許可
+「新しいリリースを作成」→ App Bundle のところで
+ライブラリから versionCode 3 (1.0.0) を選択（または同じ AAB をアップロード）。
 
-  ※A-2-1. グローバル設定方針（DEV ロールスイッチ）※決定事項
+リリース名：3 (1.0.0) のままで OK。
 
-1. 使うフラグを 1 本に統一する
+リリースノート：Initial closed test build for GeoAttendance 1.0.0. など簡単で OK。
 
-開発用ロール切り替えのオンオフは、これ 1 本だけで管理する方針にします。
+保存 → 審査へ
 
-環境変数名: EXPO_PUBLIC_ENABLE_DEV_SWITCH
+画面下部で「次へ」→ 「保存して公開」 まで進める。
 
-JS 側の定義イメージ（すでに tabs レイアウトで使っている形で OK）
+これで クローズドテスト版 3 (1.0.0) が審査待ちになる。
 
-const enableDev =
-(typeof **DEV** !== "undefined" && **DEV**) ||
-process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+※ このフェーズでは、内部テストトラックはそのまま残しておいて問題ありません。
 
-このルールの意味:
+## フェーズ 2：12 Testers に依頼する準備
 
-Expo Go / ローカル開発
-**DEV** が true なので、何もしなくても enableDev = true
-→ これまで通り DevRoleBadge と DEV 用タブ挙動が使える
+12 Testers は「12 人の実機テスターが 14 日間テストする」サービス。
+Google Play
 
-EAS Build（internal / production）
-**DEV** は false になるので、
+Starter Plan を使う前提で動きます。
 
-EXPO_PUBLIC_ENABLE_DEV_SWITCH="1" → enableDev = true（Debug 用ビルド）
+クローズドリリースが “利用可能” になったら
 
-それ以外 → enableDev = false（本番想定）
+クローズドテスト画面の「テスター」タブから：
 
-この「enableDev」を、今後は
+テスターリスト方式 なら：メールリストを作成（12testers など）。
 
-app/\_layout.tsx（DevRoleBadge の表示条件）
+リンク方式 なら：Google が承認後に オプトイン URL（テスト参加リンク） が出ます。
+BuddyBoss
 
-app/(tabs)/\_layout.tsx（Debug タブ・Organizer ロックの表示条件）
+12 Testers 側で必要な情報を確認
 
-stores/devRole.ts / roleGates.ts（必要なら）
+公式サイトのフォーム / オーダーページで通常必要になる情報：
 
-などで共通の「真偽値」として見ていく想定です。
+アプリ名・パッケージ名：com.kenta0015.geoattendance.internal
 
-2. EAS 側の設定方針
+対象プラン：Starter Plan (1 app)
 
-eas.json の build プロファイルごとに、こういう方針にしておくと整理しやすいです。
+対象ストア：Google Play / Closed testing
 
-internal プロファイル（社内テスト・Debug 用）
+テスト用の Play ストアリンク（オプトイン URL）
+もしくは、テスター用 Gmail アドレス一覧を受け取るパターンもあります。
 
-env.EXPO_PUBLIC_ENABLE_DEV_SWITCH = "1"
+どちらの方式で行くかの方針
 
-→ DevRoleBadge や Debug タブを使ってテストできる
+リンク方式 OK の場合（たぶんこれが普通）：
 
-production プロファイル（ストア提出用）
+クローズドテストのオプトイン URL を 12 Testers に渡す。
 
-env.EXPO_PUBLIC_ENABLE_DEV_SWITCH は 設定しない か "0"
+メールアドレス方式の場合：
 
-→ すべての DEV ロール UI・挙動が封印される
+12 Testers から 12 個の Gmail アドレスを受け取る。
 
-この設定さえしておけば、
+Play Console の「メールリスト」にそれら 12 件を登録。
 
-「どのビルドでロール切り替えを出すか」は eas.json 側だけで制御できる
+「保存」してテストを開始。
 
-コード内では常に enableDev を見るだけで済む
+## フェーズ 3：14 日間テスト期間の運用
 
-という状態になります。
+目標： 「12 人以上のテスターが 14 日間クローズドテストに参加」という条件を満たす。
+BuddyBoss
 
-#### A-2-2. DevRoleBadge（画面右上のロール切替バッジ）の制御　完了
+原則としてこの期間は “大きなアップデートはしない”
 
-対象ファイルの想定:
+新しい AAB をクローズドトラックに出すと、
+「どのバージョンで 14 日間テストしたか」が分かりにくくなります。
 
-- app/\_layout.tsx
-- components/DevRoleBadge.tsx（存在する場合）
+重大バグでない限り、versionCode 3 (1.0.0) を 14 日間固定で使うイメージにしておく。
 
-やること:
+内部テストトラックでの開発は継続して OK
 
-- [ ] DevRoleBadge を描画する条件に `enableDev` を追加
-  - [ ] `EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1"` のときだけ表示
-  - [ ] 本番ビルドではバッジが一切出ない状態にする
+次バージョン（たとえば 1.0.1 / versionCode 4）のテストは、
+これまでどおり 内部テストトラック で行えば、クローズドテストには影響しません。
 
-#### A-2-3. Tabs 周りのロール依存の整理(ロール切り替えの中身は完了（ログで確認済み　ラベルだけが Organize (locked) に変わらないが、機能的には OK なので放置)
+クラッシュ・ANR のチェック
 
-対象ファイル:
+Play Console → 「モニタリング > アプリの品質」 などでクラッシュ状況を確認。
 
-- app/(tabs)/\_layout.tsx
+もし致命的なクラッシュが連発していたら、その時点で相談して、
+「リリースを作り直すか／このまま 14 日完走するか」を決める。
 
-やること:
+12 Testers 側のダッシュボード
 
-- [ ] Organizer タブの `href` 制御を見直す
-  - [ ] 本番ビルドでは:
-    - Organizer タブは常に有効（ロック表示は不要）
-  - [ ] Debug 時のみ:
-    - Attendee ロール選択時に `href: null` などでロック表示してもよい
-- [ ] Debug 用の Hidden ルート（admin など）はそのまま維持
-  - [ ] `options={{ href: null }}` でタブには出さず、直接リンクでのみアクセスできる状態を保つ
+テスト進捗（何人インストール済みか、何日経過したか）が見られるはずなので
+「予定通り 12 人に達しているか」を確認しておく。
 
-#### A-2-4. devRole ストアと role Gate の扱い
+## フェーズ 4：クローズドテスト完了 → 製品版アクセス申請
 
-対象ファイル例:
+14 日＋ α 経過し、12 人条件も満たしたタイミングで進める内容です。
 
-- stores/devRole.ts
-- components/roleGates.ts
-- app/(tabs)/organize/admin/\_layout.tsx など
+Play Console ダッシュボードを確認
 
-やること:
+「製品版へのアクセスを申請」といったカードが出てくるはずです。
+BuddyBoss
 
-- [ ] `useIsOrganizer` / `useIsAttendee` 内で `enableDev` をチェック
-  - [ ] `enableDev` が false の場合:
-    - 本番では「Organizer アプリ」として扱う（実質 `isOrganizer = true` としてよい）
-  - [ ] `enableDev` が true の場合:
-    - 今まで通り DEV ロールスイッチの状態を反映（Debug 用）
-- [ ] Admin 系ルートは引き続き `useIsOrganizer` でガード
-  - 本番ユーザーは通常触れない想定で問題ない
+申請フォームの回答
 
----
+質問内容の例：
 
-### A-3. 案 1 実装後のテスト観点
+クローズドテストの内容（期間・人数・主なフィードバック）
 
-- [ ] Debug ビルド（Expo Go / internal 環境）
-  - [ ] DevRoleBadge が表示され、Organizer/Attendee 切替ができる
-  - [ ] Tabs 表示:
-    - [ ] History / Organize / Profile / Debug の 4 つが期待通り
-  - [ ] Organizer / Attendee モード切替で:
-    - [ ] Organizer: Organize タブからイベント作成〜QR 表示ができる
-    - [ ] Attendee: Organizer 機能側がロック（または使わない想定）でも、最低限 History や Scan が検証できる
-- [ ] 本番設定と同等のビルド（ローカルで env を本番設定にする）
-  - [ ] DevRoleBadge が表示されないこと
-  - [ ] Tabs に余計なタブが出ていないこと
-  - [ ] Organizer フロー（イベント作成〜QR〜Check-in〜History）が一通り問題なく動く
+アプリの用途・対象ユーザー
 
----
+リリース前に行ったテストや品質確保の方法 など
 
-A-4 進捗まとめ
+ここは英語での説明が必要になるので、
+実際にフォームが出たらスクショ or 質問文を送ってくれれば、一問ずつ英文を一緒に作る。
 
-A-4-1. ビルドまわりの最終チェック（ローカル）
+申請後のステータス管理
 
-実質 OK 扱いで問題ない状態です。
+通常は 1 週間以内に結果がメールで届くとされています。
+BuddyBoss
 
-ローカル環境は今回の署名問題の影響を受けておらず、EAS でのビルドも通っているので、「リリースを止めるレベルのビルド問題」は残っていません。
+## フェーズ 5：本番（Production）リリース
 
-A-4-2. EAS で本番 AAB をビルド ✅ 完了
+製品版アクセスが承認されたあとにやることです。
 
-eas build --platform android --profile production で、本番用パッケージ
-com.kenta0015.geoattendance の AAB を作成済み。
+最終ビルドを決める
 
-Keystore も Play Console 側と整合するように設定済み。
+「クローズドテストと同じ versionCode 3 をそのまま本番へ出す」
 
-A-4-3. 内部テストトラックでの最終確認 ✅ 完了
+重大な問題がなければこれが一番安全。
 
-内部テストトラック v1-internal に versionCode 2 の .aab をアップロード済み。
+もし内部テストで 1.0.1 などを作っていた場合：
 
-端末のアプリ情報で
-App installed from Google Play Store
-com.kenta0015.geoattendance.internal / version 1.0.0
-を確認済み。
+その版を eas build --profile production でビルドして、
+versionCode 4 などとして本番トラックに出す。
 
-そのビルドを実際に端末にインストールして、ざっと機能チェック → 「全体的に OK」とのこと。
+Production トラックにリリース作成
 
----
+左メニュー → 「テストとリリース > 製品版」
 
-## フェーズ B: 審査待ち期間中に案 2（Register ＋ロール設計）の準備
+「新しいリリースを作成」 → App Bundle を選択 → リリースノートを記入
 
-審査中は Play Console に新ビルドを出さず、ローカル or 別ブランチで作業する想定。
+「保存して公開」で本番リリースを開始。
 
-### B-1. 案 2 の仕様固め（ドキュメント化）
+今後のアップデート方針（ざっくり）
 
-- [ ] Register 画面の UX をテキストで整理
-  - [ ] 入力項目:
-    - [ ] 名前（表示名）
-    - [ ] 役割（Organizer / Attendee）
-  - [ ] 初回起動時のフロー:
-    - [ ] 未登録ユーザーは必ず Register 画面へ
-    - [ ] 登録済みユーザーは role に応じたホームへ遷移
-- [ ] Organizer / Attendee 用の「ホーム画面イメージ」を言語化
-  - Organizer:
-    - 現状の Organize タブ＋ History をベース
-  - Attendee:
-    - 参加イベント一覧（History ベース）
-    - QR スキャン入口（attend/scan）
-- [ ] 既存の招待トークン（join フロー）とどう組み合わせるかの案をまとめる
+新機能や大きい変更：
 
-### B-1 で決めたこと（案）
+まず 内部テストトラック で検証。
 
-Register 画面
+安定してきたら クローズドテストトラック で短期テスト。
 
-必須項目：Display name + Role
+問題なければ 本番トラック に反映。
 
-Skip はナシ
+緊急バグ修正：
 
-「登録済み」の定義
-
-user_profiles に存在し、display_name と role が埋まっている。
-
-起動フロー
-
-user_profiles.role が無ければ必ず /register
-
-あれば Organizer / Attendee のホームへ直行
-
-ホーム画面のイメージ
-
-Organizer：自分が主催するイベントの Today/Upcoming 一覧を起点に、Live/QR/Invite へ飛べる
-
-Attendee：自分の My Events を起点に、Scan への導線を常に見せる
-
-招待トークンとの組み合わせ
-
-Register 前に招待から来た場合は、招待内容に応じて role 初期値を決める
-
-Register 後は role は変えず、イベントとの関係だけを追加する
-
-### B-2. データモデル案
-
-- [ ] Supabase 側に `user_profile.role` などのカラム追加案を整理
-  - [ ] 値の候補: `"organizer"`, `"attendee"`
-  - [ ] 既存ユーザーのデフォルトは `"organizer"` とするか要検討
-- [ ] ローカル保存との役割分担を決める
-  - [ ] 本当のソースオブトゥルースは Supabase か
-  - [ ] 端末ごとの一時フラグとして AsyncStorage を使うか
-
-###B-2 で「決まったこと」要約
-
-user_profiles.role（text）を追加し、値は "organizer" / "attendee" の 2 種類。
-
-既存ユーザーはすべて "organizer" で埋める（初期マイグレーション）。既存ユーザーは一旦すべて "organizer" として扱う。新規ユーザー：Register 経由で role を必ず埋める（将来の B/C フェーズで実装）
-
-グローバルロールのソース・オブ・トゥルースは Supabase 側。
-AsyncStorage はあくまでキャッシュ／DEV override 用。
-
-有効ロールの解決は：
-
-本番：effectiveRole = user_profiles.role
-
-DEV：effectiveRole = devRoleOverride ?? user_profiles.role
-
-public.user_profile に以下を追加：
-
-display_name text
-
-role text（'organizer' / 'attendee'）
-
-既存ユーザーは一括で：
-
-update public.user_profile set role = 'organizer' where role is null;
-
-将来的に：
-
-role に NOT NULL + CHECK 制約
-
-display_name も Register 実装が固まったら必須化を検討
-
-### B-3. ルーティング方針
-
-- [ ] 起動時のエントリーポイント
-  - [ ] `app/index.tsx` または `app/_layout.tsx` で
-    - [ ] 「role が未登録なら /register」へ
-    - [ ] role があれば:
-      - Organizer → `/organize` または `/events`
-      - Attendee → `/events` または専用タブ
-- [ ] タブ構成の草案
-  - Organizer:
-    - History / Organize / Profile / Debug
-  - Attendee:
-    - My Events / Scan / Profile 等、シンプルな構成
-
----
-
-### B-3 の結論としては、こんな感じで固定しておいてよさそう：
-
-起動ゲートを 1 箇所にまとめる
-
-app/index.tsx（またはトップ \_layout.tsx）で、
-
-Supabase Auth → user_profile.role を取得
-
-effectiveRole を決める
-
-本番ビルドでは：
-
-effectiveRole = user_profile.role 固定
-
-'organizer' → ORGANIZER_HOME_ROUTE
-
-'attendee' → ATTENDEE_HOME_ROUTE
-
-DEV ビルドでは：
-
-effectiveRole = devOverrideRole ?? user_profile.role
-
-これまでの DEV Role 切り替え UI をこの devOverrideRole に接続するだけで、
-Organizer / Attendee UI の切り替えを維持できる。
-
-Organizer / Attendee の中身（タブ構成や画面遷移）は 既存のものを流用し、
-「入り口だけ user_profile.role から自動で振り分ける」変更にとどめる。
-
-## フェーズ C: v1 公開後に案 2 を実装して v1.1 としてリリース
-
-ここから先は、v1 公開後の段階で実際に手を動かすフェーズ。
-
-### C-1. 実装ステップ（案）
-
-- [ ] ブランチ作成
-  - 例: `feature/register-role-v2`
-- [ ] Register 画面の UI 骨組み
-  - [ ] 名前入力
-  - [ ] ロール選択（Organizer / Attendee）
-  - [ ] 決定ボタン
-- [ ] Supabase との連携
-  - [ ] プロファイルテーブルに role を保存
-  - [ ] ログイン済みユーザーの role を取得するフック作成
-- [ ] 起動フローの組み込み
-  - [ ] `app/index.tsx` で:
-    - [ ] role 未設定 → `/register`
-    - [ ] role 設定済み → role に応じてホームへ
-- [ ] タブ構成の出し分け
-  - [ ] Organizer 用タブ
-  - [ ] Attendee 用タブ（最低限: 履歴＋スキャン入口）
-
-### C-2. テストとリリース準備
-
-- [ ] 新旧ユーザーのテストケース洗い出し
-  - [ ] v1 から v1.1 にアップデートした場合
-  - [ ] 新規インストールの場合
-- [ ] EAS Build で v1.1 用 AAB を作成
-- [ ] Play Console でアップデートとして提出
-
-### C-3：既存ユーザー＋ロールの扱いを決める
-
-ここは データ面の整理 としてやること：
-
-C-3-1: user_profile の既存レコードの方針決め
-
-role が NULL のユーザー → 一律 "organizer" にするのか
-
-それとも初回起動時に /register へ送るのか
-
-C-3-2: 「不完全プロフィール」の定義を確定
-
-例）display_name が空 OR role が空 → /register
-
-逆に「完成プロフィール」の条件も固定する
-
-※ ここは DB と仕様の話なので、コード変更は最小。
-
-### C-4：user_profile.role をアプリの「現在のロール」に配線する
-
-ここがさっき話していた「Attendee パスのテスト」が本当に意味を持つための部分です。
-
-C-4-1: 現在のロール管理の把握
-
-useDevRole（or それに相当する store/hook）
-
-app/(tabs)/\_layout.tsx（Tabs が role をどう使っているか）
-
-DevRoleBadge（黄色バッジが何を上書きしているか）
-
-C-4-2: 「サーバーロール」を一次ソースにする方針を決める
-
-serverRole（Supabase）＋ devOverride（開発用上書き）の関係を決める
-
-例：
-
-本番：serverRole だけを見る
-
-開発：serverRole を初期値として、バッジで一時的に上書き可能
-
-C-4-3: 実装
-
-index で取得した user_profile.role を、ロールストアに流し込む
-
-Tabs や EventsList, Profile が そのストア を見るように変更
-
-DevRoleBadge は「そのストアを一時的に上書きする」形に変更
-
-ここまで終わると、
-
-Supabase の user_profile.role = attendee に変える → 起動直後から Attendee UI
-
-が初めて成立します。
-
-### C-5：Organizer / Attendee のホーム動線の整理
-
-C-5-1: Organizer 起動時
-
-どのタブを初期表示にするか（現状どおり History/Events ベースで OK か）
-
-C-5-2: Attendee 起動時
-
-me/events を最初に出す／Organize タブを隠す などの方針を確定
-
-C-5-3: 実装・テスト
-
-Organizer と Attendee のそれぞれで、起動 → ホームが意図通りか確認
-
-## フェーズ D（あとでで OK）：Join / 招待トークンとの統合
-
-ここは B で方針だけ触れていた部分を、最後にまとめてやる想定。
-
-D-1: 「招待リンクから来た人」が Register をどう通過するか
-
-D-2: 既存の join フローと user_profile / role の整合性
-
----
+必要なら直接クローズド／本番トラックに小さい修正だけ出す。
 
 # ① どの画面が Session / Guest を参照しているか
 
@@ -820,123 +561,113 @@ Scan（Organizer）（/app/(tabs)/organize/events/[id]/scan.tsx）：戻る 1 �
 
 ## Dev ロールスイッチ ON/OFF メモ（現行構成ベース）
 
-### 1. 役割分担の整理
+### 「開発中で Dev UI を表示させたい」時のコード
 
-stores/devRole.ts
+devRole.tsx のコードを
 
-devSwitchEnabled()
-→ 「Dev ロールスイッチ（バッジ＋ Debug タブ）を有効にするか？」の唯一のスイッチ
-
-useEffectiveRole()
-→ 実際に画面で使う role（organizer/attendee）を返す。
-Dev スイッチ ON のときはローカル override を反映、OFF のときは Supabase の role だけ使う設計。
-
-app/\_layout.tsx
-
-const enableDev = devSwitchEnabled();
-
-enableDev が true のときだけ DevRoleBadge を表示。
-
-起動時ログに [dev-switch] enableDev = ... が出る。
-
-app/(tabs)/\_layout.tsx
-
-const enableDev = devSwitchEnabled();
-
-useEffectiveRole() でタブの表示内容を切り替え。
-
-enableDev が true のときだけ Debug タブに href が付き、
-role === "attendee" && !enableDev のとき Organize タブを非表示にする。
-
-### 2. Dev ロールスイッチを「完全 OFF」にする方法（本番想定）
-
-目的：
-
-DevRoleBadge 非表示
-
-Debug タブ非表示
-
-Attendee は Organize タブにアクセスできない
-
-role は Supabase の user_profile のみで決まる（ローカル override 無効）
-
-やること：
-
-stores/devRole.ts を開く。
-
-devSwitchEnabled() を次のように固定する（メモ用の例）：
-
+```ts
 export function devSwitchEnabled(): boolean {
-return false;
+  const isDev = typeof __DEV__ !== "undefined" && __DEV__;
+
+  const envEnabled =
+    typeof process !== "undefined" &&
+    typeof process.env !== "undefined" &&
+    process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
+  return isDev || envEnabled;
+}
+```
+
+### 「開発中だけど Dev UI を隠したい」時のコード
+
+**devSwitchEnabled()関数 1 個まるごと** を、下のコードに 入れ替える。
+
+```ts
+export function devSwitchEnabled(): boolean {
+  return false;
+}
+```
+
+※元の devSwitchEnabled()関数（下記）の部分は不要。上のコードに差し替え（つまり 7 行分の関数が 2 行になる）
+
+```ts
+export function devSwitchEnabled(): boolean {
+  const isDev = typeof __DEV__ !== "undefined" && __DEV__;
+
+  const envEnabled =
+    typeof process !== "undefined" &&
+    typeof process.env !== "undefined" &&
+    process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
+  return isDev || envEnabled;
+}
+```
+
+### 「ストア公開用ビルド（本番）」のとき
+
+コードは パターン ① のまま（何も変えない）：
+
+```ts
+export function devSwitchEnabled(): boolean {
+  const isDev = typeof __DEV__ !== "undefined" && __DEV__;
+
+  const envEnabled =
+    typeof process !== "undefined" &&
+    typeof process.env !== "undefined" &&
+    process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH === "1";
+
+  return isDev || envEnabled;
+}
+```
+
+そのうえで、eas.json の本番プロファイルに
+EXPO_PUBLIC_ENABLE_DEV_SWITCH: "1" を書かない。
+
+✅ 正しい例（本番には書かない）：
+
+```json
+
+"production": {
+  "developmentClient": false,
+  "distribution": "store"
 }
 
-保存して、npx expo start -c でキャッシュクリア＋再起動。
+```
 
-Metro ログで次を確認：
+❌ ダメな例（本番にも書いちゃってる）：
 
-[dev-switch] enableDev = false が出ていること。
-
-実機で確認：
-
-画面右下などに DevRoleBadge が出ないこと。
-
-タブバーに Debug タブが出ないこと。
-
-attendee アカウントでログインした場合、Organize タブが表示されない（またはタップできない）こと。
-
-organizer アカウントでは Organize タブが表示され、通常通り使えること。
-
-### 3. Dev ロールスイッチを「ON」にする方法（開発用）
-
-目的：
-
-DevRoleBadge を表示して、画面から Organizer / Attendee を切り替えて挙動を確認する。
-
-Debug タブも一時的に表示して使えるようにする。
-
-やること：
-
-stores/devRole.ts を開く。
-
-devSwitchEnabled() を一時的に次のようにする：
-
-export function devSwitchEnabled(): boolean {
-return true;
+```json
+"production": {
+  "developmentClient": false,
+  "distribution": "store",
+  "env": {
+    "EXPO_PUBLIC_ENABLE_DEV_SWITCH": "1"
+  }
 }
 
-（あとから環境変数ベースの式に戻すなら、ここを調整する）
 
-保存して、npx expo start -c で再起動。
 
-Metro ログで次を確認：
+```
 
-[dev-switch] enableDev = true が出ていること。
+3️⃣ ビルドするとき
 
-実機で確認：
+本番はこう実行するだけ：
 
-画面右下に DevRoleBadge が表示されること。
+```bash
 
-Badge から Organizer / Attendee を切り替えたときに：
+eas build --profile production --platform android
+# or
+eas build --profile production --platform ios
 
-History タブの文言（説明テキスト）が role に合わせて変わること。
+```
 
-Organize タブの中身も role に応じて挙動が変わること（今は organizer だけが Create event を表示、attendee なら作成 UI は非表示など）。
+要するに：
 
-タブバーに Debug タブが表示されること。
+**Dev 用プロファイル（preview など）**には
+env.EXPO_PUBLIC_ENABLE_DEV_SWITCH: "1" を書いて OK
 
-### 4. 将来の運用方針（メモだけ）
-
-ローカル開発：
-
-devSwitchEnabled() を true 固定、または **DEV** ベースの式にしておく。
-
-ストア提出用ビルド：
-
-devSwitchEnabled() を false 固定にしてビルドする。
-
-必要なら、あとで：
-
-devSwitchEnabled() の中で **DEV** や process.env.EXPO_PUBLIC_ENABLE_DEV_SWITCH を使う形に拡張する。
+**本番用プロファイル（production など）**には
+そのキーを 書かない（env セクションごと無しでも OK）
 
 ## 12 人 ×14 日テスト
 
@@ -1225,3 +956,222 @@ user_profile の role
 router.replace の行き先
 
 を出しておくと、どこで何に飛んでいるか後から追いやすい。
+
+## APK アップデートについて
+
+実機テスト用プロフィール（APK 用） … 例：preview を「テスト専用」に固定
+
+distribution: "internal"
+
+android.buildType: "apk"
+
+env で APP_ENV=internal
+
+ストア用プロフィール（AAB 用） … 例：production
+
+distribution: "store"
+
+AAB（今作ったやつと同じ系統）
+
+これは Google Play に出したくなったときだけ使う
+
+# フェーズ A：アプリ側の修正（Location 説明画面）
+
+## A-1. 新しい画面 location-disclosure を追加
+
+app/location-disclosure.tsx を新規作成
+
+画面レイアウト：
+
+Title：Location access for attendance verification
+
+Body：前回決めた 4 文（背景位置情報／目的／広告には使わない／設定で変更可）
+
+ボタン：
+
+Continue（メイン）
+
+Cancel（サブ）
+
+ボタンの動き：
+
+Continue：
+
+AsyncStorage に @geoattendance.locationDisclosure.v1 = "accepted" を保存
+
+next パラメータを読んで router.replace(next || "/")
+
+Cancel：
+
+フラグは 保存しない
+
+router.replace(next || "/") で戻るだけ（チェック開始しない）
+
+✅ ここでは Location Permission を直接リクエストしない（あくまで説明専用画面）。
+
+## A-2. Start attendee check ボタンのフローを変更（Live 画面）
+
+対象ファイル：app/(tabs)/organize/events/[id]/live.tsx
+
+Start attendee check ボタンのハンドラ（handleArmGeofence）内で：
+
+AsyncStorage から @geoattendance.locationDisclosure.v1 を読み込む
+
+判定ロジック：
+
+accepted でない場合：
+
+router.push({ pathname: "/location-disclosure", params: { next: /organize/events/${id}/live } })
+
+→ この時点では geofence はまだスタートしない
+
+accepted の場合：
+
+今まで通り：
+
+ensurePermissions()（lib/geofenceActions.ts）
+
+OK なら armGeofenceAt(point, radius) を呼ぶ
+
+✅ 説明画面から戻ってきたあとは、ユーザーがもう一度 Start attendee check を押したときに geofence が起動する仕様で固定。
+
+## A-3. プレビュー用 APK で動作確認
+
+eas build --platform android --profile preview で APK を作成して、実機テスト：
+
+「初回」の動き
+
+Live 画面で Start attendee check を押す
+
+→ 説明画面が出る
+
+→ Continue で Live に戻る
+
+→ もう一度 Start attendee check
+
+→ OS の Location 許可（Allow all the time）が出る
+
+→ 許可 → geofence ON（ラベル変化など確認）
+
+Cancel の動き
+
+Start attendee check → 説明画面 → Cancel
+
+→ Live に戻るが geofence は動かない
+
+→ 再度 Start attendee check 押すと、また説明画面が出る
+
+2 回目以降
+
+一度 Continue していれば、次からは Start attendee check 押下 → いきなり ensurePermissions() → geofence ON になることを確認
+
+# フェーズ B：本番用ビルド & Play Console 差し替え
+
+## B-1. 本番用 AAB を作成
+
+コマンド：
+
+eas build --platform android --profile production
+
+期待値：
+
+versionName: 1.0.0 のまま
+
+versionCode: 4（remote + autoIncrement で自動的に 3 → 4）
+
+## B-2. Play Console にアップロード
+
+内部テストトラック（v1-internal）
+
+既存の 1.0.0 (3) リリースをベースに新しいリリースを作成
+
+AAB を v4 に差し替え
+
+クローズドテストトラック（12testers）
+
+同じ AAB v4 を使ってリリース 4 を作成
+
+既存の versionCode 3 は「過去バージョン」として残るだけで OK
+
+✅ この時点で、「Start attendee check + 説明画面」つきの AAB v4 が内部テスト & クローズドテスト両方で使える状態になる。
+
+# フェーズ C：審査用の動画作成 & フォーム記入
+
+## C-1. Pixel に v4 をインストール
+
+内部テスト or クローズドテスト経由で、Play Store から v4 をインストール
+
+アプリ内バージョンが versionCode 4 になっていることを確認
+
+## C-2. 画面録画（30〜40 秒）
+
+録画シナリオ（決め打ち）：
+
+GeoAttendance を起動
+
+Organizer としてログイン（必要なら）
+
+該当イベントの Live 画面を開く
+
+Start attendee check をタップ
+
+新しい Location 説明画面が表示される
+
+Continue を押す
+
+OS の Location 許可ダイアログ（Allow all the time を選択）
+
+Live 画面へ戻る
+
+再度 Start attendee check を押して、チェックが開始されたことがわかる状態を少し映す
+（ステータス表示 or ボタン状態など）
+
+→ ここまで録画したら停止
+
+## C-3. YouTube にアップ & Play 側に登録
+
+録画動画を PC にコピー
+
+YouTube に「限定公開」でアップロード
+
+URL をコピー
+
+Play Console → 位置情報の利用許可フォーム
+「動画での手順の説明」欄に URL を貼り付けて保存
+
+# フェーズ D：クローズドテスト公開 & 12testers 実行
+
+## D-1. クローズドテストトラックを公開
+
+デベロッパーコンソールで、クローズドトラック（12testers 用）のリリース 4 (versionCode 4) がエラーなしになっていることを確認
+
+「公開」ボタンを押して、クローズドテストを有効化
+
+## D-2. 12testers 側の手配
+
+12testers のサービスで「14 日間 × 12 人」のプランを購入
+
+テスターに共有する情報：
+
+クローズドテストの招待 URL
+
+対象国：オーストラリア等（既に 177 カ国設定済み）
+
+14 日間テストしてもらい、Play の条件
+（インストール人数 / 利用日数 / アクティブ数）を満たす
+
+# フェーズ E：本番トラックへの昇格
+
+12testers のレポートを確認
+
+クラッシュや重大なバグがないか
+
+特に Start attendee check / 背景位置情報まわり
+
+問題なければ：
+
+同じ AAB v4 を「製品版トラック」に昇格
+
+必要であればストアの説明文・スクリーンショット・アイコンを最終調整
+
+「公開」を押して、正式リリース

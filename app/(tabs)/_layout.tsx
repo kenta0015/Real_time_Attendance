@@ -1,3 +1,4 @@
+// app/(tabs)/_layout.tsx
 import { Tabs } from "expo-router";
 import { Platform } from "react-native";
 import { useEffect } from "react";
@@ -91,10 +92,6 @@ export default function TabLayout() {
         <Tabs.Screen name="me/groups" options={{ href: null }} />
         <Tabs.Screen name="organize/location-test" options={{ href: null }} />
         <Tabs.Screen name="organize/admin" options={{ href: null }} />
-        <Tabs.Screen
-          name="organize/admin/[eventId]/live"
-          options={{ href: null }}
-        />
         <Tabs.Screen name="organize/events/[id]" options={{ href: null }} />
         <Tabs.Screen
           name="organize/events/[id]/invite"

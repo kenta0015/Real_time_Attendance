@@ -13,20 +13,16 @@ import {
   ScrollView,
 } from "react-native";
 import { useLocalSearchParams, router, usePathname } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
 import * as Notifications from "expo-notifications";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../../../../lib/supabase";
 import { haversineMeters, accuracyThreshold } from "../../../../lib/geo";
 import { getGuestId } from "../../../../stores/session";
-
-type Role = "organizer" | "attendee";
-const ROLE_KEY = "rta_dev_role";
-
-// --- Geofence constants ------------------------------------------------------
-const GEOFENCE_TASK = "rta/geofence.v1";
-const ARM_KEY = "rta_geofence_arm_event_id";
+import { useEffectiveRole } from "../../../../stores/devRole";
+import { GEOFENCE_TASK } from "../../../../lib/geofence";
+import { armGeofenceAt, disarmGeofence, geofenceStatus } from "../../../../lib/geofenceActions";
 
 type EventRow = {
   id: string;
@@ -43,6 +39,7 @@ type RSVPStatus = "going" | "not_going" | null;
 
 const BLUE = "#2563EB";
 const CARD_BORDER = "#E5E7EB";
+const DISCLOSURE_KEY = "@geoattendance.locationDisclosure.v1";
 
 // --- helpers -----------------------------------------------------------------
 function Row({ label, value }: { label: string; value: string }) {
@@ -65,19 +62,7 @@ async function getEffectiveUserId(): Promise<string> {
 
 function clampRadius(input?: number | null) {
   const v = input ?? 100;
-  // B: clamp between 100–150m
   return Math.min(150, Math.max(100, Math.floor(v)));
-}
-
-function regionForEvent(e: EventRow): Location.LocationRegion {
-  return {
-    identifier: `event:${e.id}`,
-    latitude: e.venue_lat ?? 0,
-    longitude: e.venue_lng ?? 0,
-    radius: clampRadius(e.venue_radius_m),
-    notifyOnEnter: true,
-    notifyOnExit: true,
-  };
 }
 
 function parseEventIdFromIdentifier(id?: string | null) {
@@ -87,18 +72,13 @@ function parseEventIdFromIdentifier(id?: string | null) {
 }
 
 async function getDeviceLabel(): Promise<string> {
-  // Dynamic require to avoid hard dependency when the module is missing
   let label = Platform.OS;
   try {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const Device: any = require("expo-device");
-    label =
-      Device?.modelName ||
-      Device?.deviceName ||
-      Device?.manufacturer ||
-      Platform.OS;
+    label = Device?.modelName || Device?.deviceName || Device?.manufacturer || Platform.OS;
   } catch {
-    // module not installed; keep fallback string
+    // keep fallback
   }
   return label;
 }
@@ -142,33 +122,27 @@ if (!TaskManager.isTaskDefined(GEOFENCE_TASK)) {
       const minuteKey = at.toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
       const idem = `${eventId ?? "?"}:${userId ?? "?"}:${dir}:${minuteKey}`;
 
-      // Optional: get last known accuracy (best-effort)
       let acc: number | null = null;
       try {
         const last = await Location.getLastKnownPositionAsync();
         acc = last?.coords?.accuracy ?? null;
       } catch {}
 
-      await supabase
-        .from("geofence_events")
-        .upsert(
-          {
-            event_id: eventId,
-            user_id: userId,
-            dir,
-            at: at.toISOString(),
-            region_id: region?.identifier ?? null,
-            acc_m: acc == null ? null : Math.round(acc),
-            device,
-            idem,
-          },
-          { onConflict: "idem" }
-        );
-
-      await notify(
-        `Geofence ${dir}`,
-        `${region?.identifier ?? "region"} @ ${minuteKey}`
+      await supabase.from("geofence_events").upsert(
+        {
+          event_id: eventId,
+          user_id: userId,
+          dir,
+          at: at.toISOString(),
+          region_id: region?.identifier ?? null,
+          acc_m: acc == null ? null : Math.round(acc),
+          device,
+          idem,
+        },
+        { onConflict: "idem" }
       );
+
+      await notify(`Geofence ${dir}`, `${region?.identifier ?? "region"} @ ${minuteKey}`);
 
       try {
         DeviceEventEmitter.emit("rta_geofence_event", {
@@ -200,16 +174,7 @@ export default function OrganizeEventDetail() {
     console.log("[route]", pathname, "id=", eid, "renders=", renders.current);
   }, [pathname, eid]);
 
-  const [role, setRole] = useState<Role>("organizer");
-  const loadRole = useCallback(async () => {
-    const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-    setRole(v === "attendee" ? "attendee" : "organizer");
-  }, []);
-  useEffect(() => {
-    loadRole();
-    const sub = DeviceEventEmitter.addListener("rta_role_changed", loadRole);
-    return () => sub.remove();
-  }, [loadRole]);
+  const role = useEffectiveRole();
 
   // === Event load ============================================================
   const [loading, setLoading] = useState(true);
@@ -241,7 +206,7 @@ export default function OrganizeEventDetail() {
     })();
   }, [eid]);
 
-  // === RSVP (Attendee) ================================================
+  // === RSVP (Attendee) =======================================================
   const [rsvp, setRsvp] = useState<RSVPStatus | null>(null);
   const [rsvpBusy, setRsvpBusy] = useState(false);
 
@@ -258,8 +223,7 @@ export default function OrganizeEventDetail() {
       if (error) throw error;
       if (data?.rsvp_status) {
         const raw = String(data.rsvp_status);
-        const mapped =
-          raw === "going" ? "going" : raw === "not_going" ? "not_going" : null;
+        const mapped = raw === "going" ? "going" : raw === "not_going" ? "not_going" : null;
         setRsvp(mapped as RSVPStatus);
       } else setRsvp(null);
     } catch (e: any) {
@@ -277,21 +241,19 @@ export default function OrganizeEventDetail() {
       if (!eid) return;
       try {
         setRsvpBusy(true);
-        setRsvp(next); // optimistic
+        setRsvp(next);
         const userId = await getEffectiveUserId();
-        const { error } = await supabase
-          .from("event_members")
-          .upsert(
-            {
-              event_id: eid,
-              user_id: userId,
-              rsvp_status: next,
-              invite_source: "rsvp",
-            },
-            {
-              onConflict: "event_id,user_id",
-            }
-          );
+        const { error } = await supabase.from("event_members").upsert(
+          {
+            event_id: eid,
+            user_id: userId,
+            rsvp_status: next,
+            invite_source: "rsvp",
+          },
+          {
+            onConflict: "event_id,user_id",
+          }
+        );
         if (error) throw error;
         Alert.alert("Saved", `RSVP: ${next ?? "—"}`);
       } catch (e: any) {
@@ -313,7 +275,6 @@ export default function OrganizeEventDetail() {
 
     try {
       setGpsBusy(true);
-      // 1) Permissions
       const fg = await Location.getForegroundPermissionsAsync();
       if (fg.status !== "granted") {
         const ask = await Location.requestForegroundPermissionsAsync();
@@ -324,7 +285,6 @@ export default function OrganizeEventDetail() {
         }
       }
 
-      // 2) Current position (high accuracy)
       const pos = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.High,
         mayShowUserSettingsDialog: true,
@@ -342,9 +302,9 @@ export default function OrganizeEventDetail() {
       if ((pos.coords.accuracy ?? 9999) > accThresh) {
         Alert.alert(
           "Low accuracy",
-          `Accuracy ${Math.round(pos.coords.accuracy ?? 0)}m > threshold ${Math.round(
-            accThresh
-          )}m. Move to open area and try again.`
+          `Accuracy ${Math.round(
+            pos.coords.accuracy ?? 0
+          )}m > threshold ${Math.round(accThresh)}m. Move to open area and try again.`
         );
         setGpsBusy(false);
         return;
@@ -413,112 +373,86 @@ export default function OrganizeEventDetail() {
     }
   }, [eventRow]);
 
-  // === Geofence: arm / disarm / status ======================================
-  const [armBusy, setArmBusy] = useState(false);
-  const [disarmBusy, setDisarmBusy] = useState(false);
-  const [deleteBusy, setDeleteBusy] = useState(false);
-  const [geoStatus, setGeoStatus] = useState<string>("—");
+  // === Attendee auto-check (Organizer geofence) ==============================
+  const [attendeeCheckStatus, setAttendeeCheckStatus] = useState<string>("—");
+  const [attendeeStartBusy, setAttendeeStartBusy] = useState(false);
+  const [attendeeStopBusy, setAttendeeStopBusy] = useState(false);
 
-  const ensureBGPermissions = useCallback(async () => {
-    const fg = await Location.getForegroundPermissionsAsync();
-    if (fg.status !== "granted") {
-      const ask = await Location.requestForegroundPermissionsAsync();
-      if (ask.status !== "granted") {
-        Alert.alert(
-          "Permission required",
-          "Location permission is required to use geofencing."
-        );
-        return false;
-      }
-    }
-    const bg = await Location.getBackgroundPermissionsAsync();
-    if (bg.status !== "granted") {
-      const ask = await Location.requestBackgroundPermissionsAsync();
-      if (ask.status !== "granted") {
-        Alert.alert(
-          "Always allow required",
-          "Please set Location permission to “Allow all the time”.",
-          [
-            { text: "Cancel", style: "cancel" },
-            {
-              text: "Open settings",
-              onPress: () => {
-                try {
-                  Linking.openSettings();
-                } catch {}
-              },
-            },
-          ]
-        );
-        return false;
-      }
-    }
-    return true;
-  }, []);
-
-  const refreshGeoStatus = useCallback(async () => {
+  const refreshAttendeeCheckStatus = useCallback(async () => {
     try {
-      const started = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK);
-      const armedFor = (await AsyncStorage.getItem(ARM_KEY)) ?? "";
-      setGeoStatus(
-        started
-          ? armedFor
-            ? `Armed (event ${armedFor})`
-            : "Armed"
-          : "Disarmed"
-      );
+      const { started } = await geofenceStatus();
+      setAttendeeCheckStatus(started ? "Active" : "Inactive");
     } catch {
-      setGeoStatus("Unknown");
+      setAttendeeCheckStatus("Unknown");
     }
   }, []);
 
   useEffect(() => {
-    refreshGeoStatus();
-  }, [refreshGeoStatus]);
+    refreshAttendeeCheckStatus();
+  }, [refreshAttendeeCheckStatus]);
 
-  const armGeofence = useCallback(async () => {
+  const handleStartAttendeeCheck = useCallback(async () => {
     if (!eventRow) return;
+
     try {
-      setArmBusy(true);
-      const ok = await ensureBGPermissions();
-      if (!ok) return;
-
-      const region = regionForEvent(eventRow);
-
-      await Location.startGeofencingAsync(GEOFENCE_TASK, [region]);
-
-      await AsyncStorage.setItem(ARM_KEY, eventRow.id);
-      await notify("Geofence armed", `${region.identifier}`);
-
-      setGeoStatus(`Armed (event ${eventRow.id})`);
-    } catch (e: any) {
-      Alert.alert("Arm failed", e?.message ?? "Unable to arm geofence.");
-    } finally {
-      setArmBusy(false);
-    }
-  }, [eventRow, ensureBGPermissions]);
-
-  const disarmGeofence = useCallback(async () => {
-    try {
-      setDisarmBusy(true);
-      const started = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK);
-      if (started) {
-        await Location.stopGeofencingAsync(GEOFENCE_TASK);
+      // 1) Check if disclosure was accepted; if not, show the explanation screen.
+      const accepted = await AsyncStorage.getItem(DISCLOSURE_KEY);
+      if (accepted !== "accepted") {
+        router.push({
+          pathname: "/location-disclosure",
+          params: { next: `/organize/events/${eventRow.id}` },
+        } as any);
+        return;
       }
-      await AsyncStorage.removeItem(ARM_KEY);
-      await notify("Geofence disarmed");
-      setGeoStatus("Disarmed");
-    } catch (e: any) {
-      Alert.alert("Disarm failed", e?.message ?? "Unable to disarm geofence.");
-    } finally {
-      setDisarmBusy(false);
+    } catch {
+      // If AsyncStorage fails, we still proceed but it's very unlikely.
     }
-  }, []);
 
-  const showGeoStatus = useCallback(async () => {
-    await refreshGeoStatus();
-    Alert.alert("Geofence status", geoStatus);
-  }, [geoStatus, refreshGeoStatus]);
+    try {
+      setAttendeeStartBusy(true);
+
+      const lat = eventRow.venue_lat;
+      const lng = eventRow.venue_lng;
+      if (lat == null || lng == null) {
+        Alert.alert("Missing location", "This event does not have a valid venue location.");
+        return;
+      }
+
+      const radius = clampRadius(eventRow.venue_radius_m);
+      await armGeofenceAt({ latitude: lat, longitude: lng }, radius);
+
+      await refreshAttendeeCheckStatus();
+      Alert.alert(
+        "Attendee check started",
+        "This device will automatically log arrivals and exits."
+      );
+    } catch (e: any) {
+      Alert.alert("Failed to start", e?.message ?? "Unable to start attendee check.");
+    } finally {
+      setAttendeeStartBusy(false);
+    }
+  }, [eventRow, refreshAttendeeCheckStatus]);
+
+  const handleStopAttendeeCheck = useCallback(async () => {
+    try {
+      setAttendeeStopBusy(true);
+      await disarmGeofence();
+      await refreshAttendeeCheckStatus();
+      Alert.alert("Attendee check stopped");
+    } catch (e: any) {
+      Alert.alert("Failed to stop", e?.message ?? "Unable to stop attendee check.");
+    } finally {
+      setAttendeeStopBusy(false);
+    }
+  }, [refreshAttendeeCheckStatus]);
+
+  const handleShowAttendeeStatus = useCallback(async () => {
+    await refreshAttendeeCheckStatus();
+    Alert.alert("Attendee check", attendeeCheckStatus);
+  }, [attendeeCheckStatus, refreshAttendeeCheckStatus]);
+
+  // === Delete event (Organizer) =============================================
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const handleDeleteEvent = useCallback(() => {
     if (!eventRow) return;
@@ -536,20 +470,14 @@ export default function OrganizeEventDetail() {
               try {
                 await disarmGeofence();
               } catch {}
-              const { error } = await supabase
-                .from("events")
-                .delete()
-                .eq("id", eventRow.id);
+              const { error } = await supabase.from("events").delete().eq("id", eventRow.id);
               if (error) throw error;
               try {
                 Alert.alert("Deleted", "Event has been deleted.");
               } catch {}
               router.replace("/events");
             } catch (e: any) {
-              Alert.alert(
-                "Delete failed",
-                e?.message ?? "Unable to delete event."
-              );
+              Alert.alert("Delete failed", e?.message ?? "Unable to delete event.");
             } finally {
               setDeleteBusy(false);
             }
@@ -557,14 +485,12 @@ export default function OrganizeEventDetail() {
         },
       ]
     );
-  }, [eventRow, disarmGeofence]);
+  }, [eventRow]);
 
   // === Render guards =========================================================
   if (!eid) {
     return (
-      <View
-        style={[styles.container, { justifyContent: "center", alignItems: "center" }]}
-      >
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
         <Text>Invalid route: missing id.</Text>
       </View>
     );
@@ -572,9 +498,7 @@ export default function OrganizeEventDetail() {
 
   if (loading) {
     return (
-      <View
-        style={[styles.container, { justifyContent: "center", alignItems: "center" }]}
-      >
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
         <ActivityIndicator />
         <Text style={styles.subtle}>Loading…</Text>
       </View>
@@ -583,9 +507,7 @@ export default function OrganizeEventDetail() {
 
   if (error || !eventRow) {
     return (
-      <View
-        style={[styles.container, { justifyContent: "center", alignItems: "center" }]}
-      >
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
         <Text style={{ color: "crimson" }}>{error ?? "Event not found"}</Text>
       </View>
     );
@@ -593,10 +515,7 @@ export default function OrganizeEventDetail() {
 
   // === UI ====================================================================
   return (
-    <ScrollView
-      style={styles.container}
-      contentContainerStyle={styles.scrollContent}
-    >
+    <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
       <Text style={styles.h1}>{eventRow.title ?? "Event"}</Text>
 
       <View style={styles.card}>
@@ -649,10 +568,7 @@ export default function OrganizeEventDetail() {
           {Platform.OS !== "web" ? (
             <View style={styles.devPanel}>
               <Text style={styles.devTitle}>DEV — Metrics</Text>
-              <Row
-                label="Accuracy"
-                value={devAcc == null ? "—" : `${Math.round(devAcc)}m`}
-              />
+              <Row label="Accuracy" value={devAcc == null ? "—" : `${Math.round(devAcc)}m`} />
               <Row
                 label="Distance to venue"
                 value={devDist == null ? "—" : `${Math.round(devDist)} m`}
@@ -708,40 +624,40 @@ export default function OrganizeEventDetail() {
         <View style={styles.card}>
           <Text style={styles.sectionLabel}>Organizer</Text>
 
-          {/* Geofence controls */}
-          <Row label="Geofence" value={geoStatus} />
+          {/* Attendee auto-check (geofence) */}
+          <Row label="Attendee check" value={attendeeCheckStatus} />
           <View style={{ height: 8 }} />
           <TouchableOpacity
-            style={[styles.btnPrimary, armBusy && { opacity: 0.6 }]}
-            onPress={armGeofence}
-            disabled={armBusy || deleteBusy}
+            style={[styles.btnPrimary, (attendeeStartBusy || deleteBusy) && { opacity: 0.6 }]}
+            onPress={handleStartAttendeeCheck}
+            disabled={attendeeStartBusy || deleteBusy}
           >
             <Text style={styles.btnPrimaryText}>
-              {armBusy ? "Arming…" : "ARM GEOFENCE"}
+              {attendeeStartBusy ? "Starting…" : "START ATTENDEE CHECK"}
             </Text>
           </TouchableOpacity>
 
           <View style={{ height: 8 }} />
           <TouchableOpacity
-            style={[styles.btnOutline, disarmBusy && { opacity: 0.6 }]}
-            onPress={disarmGeofence}
-            disabled={disarmBusy || deleteBusy}
+            style={[styles.btnOutline, (attendeeStopBusy || deleteBusy) && { opacity: 0.6 }]}
+            onPress={handleStopAttendeeCheck}
+            disabled={attendeeStopBusy || deleteBusy}
           >
             <Text style={styles.btnOutlineText}>
-              {disarmBusy ? "Disarming…" : "DISARM GEOFENCE"}
+              {attendeeStopBusy ? "Stopping…" : "STOP ATTENDEE CHECK"}
             </Text>
           </TouchableOpacity>
 
           <View style={{ height: 8 }} />
           <TouchableOpacity
-            style={[styles.btnOutline]}
-            onPress={showGeoStatus}
+            style={[styles.btnOutline, deleteBusy && { opacity: 0.6 }]}
+            onPress={handleShowAttendeeStatus}
             disabled={deleteBusy}
           >
-            <Text style={styles.btnOutlineText}>STATUS</Text>
+            <Text style={styles.btnOutlineText}>CHECK STATUS</Text>
           </TouchableOpacity>
 
-          <View style={{ height: 10 }} />
+          <View style={{ height: 16 }} />
           <TouchableOpacity
             style={[styles.btnPrimary, deleteBusy && { opacity: 0.6 }]}
             onPress={() =>

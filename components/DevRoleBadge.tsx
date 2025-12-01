@@ -1,70 +1,39 @@
-import { useCallback, useEffect, useState } from "react";
-import {
-  Pressable,
-  Text,
-  View,
-  StyleSheet,
-  DeviceEventEmitter,
-  Platform,
-} from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useCallback } from "react";
+import { Pressable, Text, View, StyleSheet, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import {
+  useDevRoleStore,
+  useEffectiveRole,
+  devSwitchEnabled,
+  type Role,
+} from "../stores/devRole";
 
-type Role = "organizer" | "attendee";
-const ROLE_KEY = "rta_dev_role";
+const enableDev = devSwitchEnabled();
 
 export default function DevRoleBadge() {
   const insets = useSafeAreaInsets();
-  const [role, setRole] = useState<Role>("organizer");
-
-  const load = useCallback(async () => {
-    try {
-      const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-      const normalized: Role = v === "attendee" ? "attendee" : "organizer";
-      console.log(
-        "[DevRoleBadge] load() from AsyncStorage:",
-        v,
-        "=> normalized:",
-        normalized
-      );
-      setRole(normalized);
-    } catch (e) {
-      console.log("[DevRoleBadge] load() failed:", String(e));
-      setRole("organizer");
-    }
-  }, []);
-
-  useEffect(() => {
-    console.log("[DevRoleBadge] mount");
-    load();
-  }, [load]);
-
-  const emitRoleChanged = (next: Role) => {
-    try {
-      console.log("[DevRoleBadge] emit rta_role_changed:", next);
-      DeviceEventEmitter.emit("rta_role_changed", next);
-    } catch (e) {
-      console.log("[DevRoleBadge] emit failed:", String(e));
-    }
-  };
-
-  const toggle = useCallback(async () => {
-    const next: Role = role === "organizer" ? "attendee" : "organizer";
-    console.log("[DevRoleBadge] toggle pressed. current:", role, "next:", next);
-    try {
-      await AsyncStorage.setItem(ROLE_KEY, next);
-      console.log("[DevRoleBadge] AsyncStorage set:", ROLE_KEY, "=", next);
-    } catch (e) {
-      console.log("[DevRoleBadge] AsyncStorage.setItem failed:", String(e));
-    }
-    setRole(next);
-    emitRoleChanged(next);
-  }, [role]);
+  const role = useEffectiveRole();
+  const setRoleOverride = useDevRoleStore((s) => s.setRoleOverride);
 
   const top = Math.max(insets.top, 8) + 8;
   const right = Math.max(insets.right, 8) + 8;
 
-  console.log("[DevRoleBadge] render. role =", role);
+  const toggle = useCallback(async () => {
+    if (!enableDev) return;
+    const next: Role = role === "organizer" ? "attendee" : "organizer";
+    console.log("[DevRoleBadge] toggle pressed. current:", role, "next:", next);
+    try {
+      await setRoleOverride(next);
+    } catch (e) {
+      console.log("[DevRoleBadge] setRoleOverride failed:", String(e));
+    }
+  }, [role, setRoleOverride]);
+
+  console.log("[DevRoleBadge] render. role =", role, "enableDev =", enableDev);
+
+  if (!enableDev) {
+    return null;
+  }
 
   return (
     <View pointerEvents="box-none" style={[styles.wrap, { top, right }]}>

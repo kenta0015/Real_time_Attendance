@@ -33,10 +33,8 @@ export default ({ config }) => {
 
     // ---- Android ----
     android: {
-      package: isProd
-        ? "com.kenta0015.geoattendance"
-        : "com.kenta0015.geoattendance.internal",
-      versionCode: 2,
+      package: "com.kenta0015.geoattendance.internal",
+      versionCode: 4,
       permissions: [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -53,9 +51,7 @@ export default ({ config }) => {
 
     // ---- iOS ----
     ios: {
-      bundleIdentifier: isProd
-        ? "com.kenta0015.geoattendance"
-        : "com.kenta0015.geoattendance.internal",
+      bundleIdentifier: "com.kenta0015.geoattendance.internal",
       buildNumber: "1",
       supportsTablet: false,
       infoPlist: {
