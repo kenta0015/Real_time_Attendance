@@ -5,11 +5,11 @@
   },
   "build": {
     "preview": {
-      "android": { "buildType": "app-bundle" },
+      "android": { "buildType": "apk" },
       "env": { "APP_ENV": "internal" },
       "channel": "internal",
       "developmentClient": false,
-      "distribution": "store"
+      "distribution": "internal"
     },
     "internal": {
       "android": { "buildType": "app-bundle" },
@@ -22,7 +22,8 @@
       "android": { "buildType": "app-bundle" },
       "env": { "APP_ENV": "production" },
       "channel": "production",
-      "developmentClient": false
+      "developmentClient": false,
+      "autoIncrement": true
     }
   },
   "submit": {

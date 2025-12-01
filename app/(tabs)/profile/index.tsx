@@ -1,19 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { View, Text, StyleSheet, Platform, ToastAndroid, Alert } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { DeviceEventEmitter } from "react-native";
 import { getGuestId } from "../../../stores/session";
 import Button from "../../ui/Button";
 import { supabase } from "../../../lib/supabase";
+import { useEffectiveRole, devSwitchEnabled } from "../../../stores/devRole";
 
-type Role = "organizer" | "attendee";
-const ROLE_KEY = "rta_dev_role";
+const enableDev = devSwitchEnabled();
 
 export default function ProfileScreen() {
-  const [guestId, setGuestId] = useState<string>("(loading…)"); 
-  const [role, setRole] = useState<Role>("organizer");
+  const [guestId, setGuestId] = useState<string>("(loading…)");
   const [signingOut, setSigningOut] = useState(false);
+  const role = useEffectiveRole();
 
   const notify = (m: string) =>
     Platform.OS === "android" ? ToastAndroid.show(m, ToastAndroid.SHORT) : Alert.alert("Info", m);
@@ -33,24 +31,19 @@ export default function ProfileScreen() {
     }
   };
 
-  const load = useCallback(async () => {
+  const loadGuestId = useCallback(async () => {
     const id = await getGuestId();
     setGuestId(id);
-    const v = (await AsyncStorage.getItem(ROLE_KEY)) ?? "organizer";
-    setRole(v === "attendee" ? "attendee" : "organizer");
   }, []);
 
   useEffect(() => {
-    load();
-    // DevRoleBadge からの変更をライブ反映
-    const sub = DeviceEventEmitter.addListener("rta_role_changed", () => load());
-    return () => sub.remove();
-  }, [load]);
+    loadGuestId();
+  }, [loadGuestId]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
-    }, [load])
+      loadGuestId();
+    }, [loadGuestId])
   );
 
   return (
@@ -60,7 +53,11 @@ export default function ProfileScreen() {
       <View style={styles.card}>
         <Text style={styles.label}>Current role</Text>
         <Text style={styles.value}>{role.toUpperCase()}</Text>
-        <Text style={styles.hint}>Toggle via the yellow DEV ROLE badge.</Text>
+        <Text style={styles.hint}>
+          {enableDev
+            ? "Toggle via the yellow DEV ROLE badge."
+            : "Role is determined by your account on the server."}
+        </Text>
       </View>
 
       <View style={styles.card}>
@@ -79,7 +76,6 @@ export default function ProfileScreen() {
           style={styles.logoutButton}
         />
       </View>
-
     </View>
   );
 }

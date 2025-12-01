@@ -19,10 +19,8 @@ import { useLocalSearchParams, router } from "expo-router";
 import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 
 import { supabase } from "@/lib/supabase";
-import { armGeofenceAt, disarmGeofence, geofenceStatus } from "@/lib/geofenceActions";
 
 import Button from "../../../../ui/Button";
-import Card from "../../../../ui/Card";
 import Tile from "../../../../ui/Tile";
 import { COLORS, SPACING, RADIUS } from "@ui/theme";
 
@@ -49,8 +47,14 @@ type FinalizedRow = {
   final_rank: number;
 };
 
+type ProfileRow = {
+  user_id: string;
+  display_name: string | null;
+};
+
 type MergedRow = {
   user_id: string;
+  name: string | null;
   is_on_time: boolean;
   is_late: boolean;
   left_early: boolean;
@@ -73,12 +77,7 @@ export default function LiveScreen() {
   const [attend, setAttend] = useState<AttendRow[]>([]);
   const [finalized, setFinalized] = useState<FinalizedRow[]>([]);
   const [isAuthed, setIsAuthed] = useState(false);
-
-  // === Geofence controls ===
-  const [lat, setLat] = useState<string>("");
-  const [lng, setLng] = useState<string>("");
-  const [radius, setRadius] = useState<string>("120");
-  const [gfStarted, setGfStarted] = useState<boolean>(false);
+  const [names, setNames] = useState<Record<string, string | null>>({});
 
   // === Edit modal ===
   const [editTarget, setEditTarget] = useState<MergedRow | null>(null);
@@ -142,9 +141,36 @@ export default function LiveScreen() {
           .eq("event_id", eventId)
           .order("final_rank", { ascending: true }),
       ]);
-      setStatuses((st ?? []) as StatusRow[]);
-      setAttend((at ?? []) as AttendRow[]);
-      setFinalized((fr ?? []) as FinalizedRow[]);
+
+      const stRows = (st ?? []) as StatusRow[];
+      const atRows = (at ?? []) as AttendRow[];
+      const frRows = (fr ?? []) as FinalizedRow[];
+
+      setStatuses(stRows);
+      setAttend(atRows);
+      setFinalized(frRows);
+
+      // Load display names for all involved user_ids
+      const userIdSet = new Set<string>();
+      stRows.forEach((row) => userIdSet.add(row.user_id));
+      atRows.forEach((row) => userIdSet.add(row.user_id));
+      frRows.forEach((row) => userIdSet.add(row.user_id));
+
+      if (userIdSet.size > 0) {
+        const { data: profiles } = await supabase
+          .from("user_profile")
+          .select("user_id,display_name")
+          .in("user_id", Array.from(userIdSet));
+
+        const map: Record<string, string | null> = {};
+        (profiles ?? []).forEach((p) => {
+          const pr = p as ProfileRow;
+          map[pr.user_id] = pr.display_name;
+        });
+        setNames(map);
+      } else {
+        setNames({});
+      }
     } finally {
       setLoading(false);
     }
@@ -154,50 +180,23 @@ export default function LiveScreen() {
     load();
   }, [load]);
 
-  // Preload event coords + geofence status
-  useEffect(() => {
-    (async () => {
-      const s = await geofenceStatus();
-      setGfStarted(s.started);
-      if (!eventId) return;
-      const { data } = await supabase
-        .from("events")
-        .select("latitude,longitude,lat,lng,radius")
-        .eq("id", eventId)
-        .maybeSingle();
-      if (data) {
-        const latitude = (data as any).latitude ?? (data as any).lat;
-        const longitude = (data as any).longitude ?? (data as any).lng;
-        const r = (data as any).radius ?? 120;
-        if (latitude != null && longitude != null) {
-          setLat(String(latitude));
-          setLng(String(longitude));
-        }
-        setRadius(String(r));
-      }
-    })();
-  }, [eventId]);
-
   const usingFinalized = finalized.length > 0;
 
   const merged: MergedRow[] = useMemo(() => {
     const byUser = new Map<string, MergedRow>();
-    for (const s of statuses) {
-      byUser.set(s.user_id, {
-        user_id: s.user_id,
-        is_on_time: !!s.is_on_time,
-        is_late: !!s.is_late,
-        left_early: !!s.left_early,
-        checked_in_at_utc: null,
-        last_valid_seen_utc: null,
-        method: null,
-        rank: 0,
-        override_note: s.override_note,
-      });
-    }
-    for (const a of attend) {
-      const cur = byUser.get(a.user_id) ?? {
-        user_id: a.user_id,
+
+    const ensureRow = (user_id: string): MergedRow => {
+      const existing = byUser.get(user_id);
+      if (existing) {
+        // Backfill name if it was missing and we just loaded it
+        if (!existing.name && names[user_id] != null) {
+          existing.name = names[user_id] ?? null;
+        }
+        return existing;
+      }
+      const row: MergedRow = {
+        user_id,
+        name: names[user_id] ?? null,
         is_on_time: false,
         is_late: false,
         left_early: false,
@@ -207,11 +206,25 @@ export default function LiveScreen() {
         rank: 0,
         override_note: null,
       };
-      cur.checked_in_at_utc = a.checked_in_at_utc;
-      cur.last_valid_seen_utc = a.last_valid_seen_utc;
-      cur.method = a.method;
-      byUser.set(a.user_id, cur);
+      byUser.set(user_id, row);
+      return row;
+    };
+
+    for (const s of statuses) {
+      const row = ensureRow(s.user_id);
+      row.is_on_time = !!s.is_on_time;
+      row.is_late = !!s.is_late;
+      row.left_early = !!s.left_early;
+      row.override_note = s.override_note;
     }
+
+    for (const a of attend) {
+      const row = ensureRow(a.user_id);
+      row.checked_in_at_utc = a.checked_in_at_utc;
+      row.last_valid_seen_utc = a.last_valid_seen_utc;
+      row.method = a.method;
+    }
+
     let arr = Array.from(byUser.values());
     if (usingFinalized) {
       const order = new Map<string, number>();
@@ -227,7 +240,7 @@ export default function LiveScreen() {
       arr.forEach((row, i) => (row.rank = i + 1));
     }
     return arr;
-  }, [statuses, attend, usingFinalized, finalized]);
+  }, [statuses, attend, usingFinalized, finalized, names]);
 
   const totals = useMemo(
     () => ({
@@ -284,35 +297,6 @@ export default function LiveScreen() {
     }
   }, [eventId, handleFinalize]);
 
-  // ===== Geofence actions =====
-  const handleArmGeofence = useCallback(async () => {
-    const latitude = Number(lat);
-    const longitude = Number(lng);
-    const r = Math.max(25, Number(radius) || 120);
-    if (Number.isNaN(latitude) || Number.isNaN(longitude)) {
-      showMsg("Invalid coords");
-      return;
-    }
-    try {
-      await armGeofenceAt({ latitude, longitude }, r);
-      setGfStarted(true);
-      showMsg("Geofence armed.");
-    } catch (e: any) {
-      showMsg(e?.message ?? "Failed to arm geofence.");
-    }
-  }, [lat, lng, radius]);
-
-  const handleDisarmGeofence = useCallback(async () => {
-    try {
-      await disarmGeofence();
-      const s = await geofenceStatus();
-      setGfStarted(s.started);
-      showMsg("Geofence disarmed.");
-    } catch (e: any) {
-      showMsg(e?.message ?? "Failed to disarm geofence.");
-    }
-  }, []);
-
   const openEdit = (row: MergedRow) => {
     setEditTarget(row);
     setEditOnTime(row.is_on_time);
@@ -347,7 +331,10 @@ export default function LiveScreen() {
   const clearOverride = async () => {
     if (!requireAuth() || !editTarget) return;
     try {
-      await supabase.from("attendance_override").delete().match({ event_id: eventId, user_id: editTarget.user_id });
+      await supabase
+        .from("attendance_override")
+        .delete()
+        .match({ event_id: eventId, user_id: editTarget.user_id });
       showMsg("Cleared.");
       setEditTarget(null);
       await load();
@@ -357,7 +344,8 @@ export default function LiveScreen() {
   };
 
   const renderItem = ({ item }: { item: MergedRow }) => {
-    const short = item.user_id.slice(0, 6) + "…" + item.user_id.slice(-3);
+    const short = shortId(item.user_id);
+    const displayName = item.name && item.name.trim().length > 0 ? item.name : short;
     return (
       <View style={styles.row}>
         <View style={styles.rankBubble}>
@@ -365,7 +353,7 @@ export default function LiveScreen() {
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.name}>
-            {short} <Text style={styles.rankHash}>#{item.rank || "?"}</Text>
+            {displayName} <Text style={styles.rankHash}>#{item.rank || "?"}</Text>
           </Text>
           <Text style={styles.meta}>
             {item.checked_in_at_utc ? fmtTime(item.checked_in_at_utc) : "—"} • {item.method ?? "unknown"} • last seen{" "}
@@ -396,47 +384,6 @@ export default function LiveScreen() {
       <Text style={styles.title}>Live — Check-in Rank</Text>
       <Text style={styles.sub}>{usingFinalized ? "Using finalized ranks" : "Using live order"}</Text>
 
-      {/* Geofence */}
-      <Card variant="elevated" style={{ marginBottom: 12 }}>
-        <Text style={styles.sectionTitle}>Geofence (Venue)</Text>
-
-        <Text style={styles.fieldLabel}>Latitude</Text>
-        <TextInput
-          value={lat}
-          onChangeText={setLat}
-          keyboardType="decimal-pad"
-          placeholder="-37.9026"
-          style={styles.input}
-        />
-
-        <Text style={styles.fieldLabel}>Longitude</Text>
-        <TextInput
-          value={lng}
-          onChangeText={setLng}
-          keyboardType="decimal-pad"
-          placeholder="145.0742"
-          style={styles.input}
-        />
-
-        <Text style={styles.fieldLabel}>Radius (m)</Text>
-        <TextInput
-          value={radius}
-          onChangeText={setRadius}
-          keyboardType="number-pad"
-          placeholder="120"
-          style={styles.input}
-        />
-
-        <View style={{ flexDirection: "row", gap: 10, marginTop: 10 }}>
-          <Button title="Arm Geofence" onPress={handleArmGeofence} />
-          <Button title="Disarm" onPress={handleDisarmGeofence} variant="danger" />
-        </View>
-
-        <Text style={{ marginTop: 8, fontWeight: "700", color: gfStarted ? COLORS.success : COLORS.textMuted }}>
-          {gfStarted ? "Geofence running" : "Geofence not running"}
-        </Text>
-      </Card>
-
       {/* Summary tiles */}
       <View style={styles.tilesRow}>
         <Tile label="Total" value={totals.total} style={styles.tileFlex} />
@@ -465,13 +412,25 @@ export default function LiveScreen() {
       <Modal visible={!!editTarget} transparent animationType="fade" onRequestClose={() => setEditTarget(null)}>
         <View style={styles.modalWrap}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>Override — {editTarget ? shortId(editTarget.user_id) : ""}</Text>
+            <Text style={styles.modalTitle}>
+              Override —{" "}
+              {editTarget
+                ? editTarget.name && editTarget.name.trim().length > 0
+                  ? editTarget.name
+                  : shortId(editTarget.user_id)
+                : ""}
+            </Text>
 
             <RowSwitch label="On-Time" value={editOnTime} onValueChange={setEditOnTime} />
             <RowSwitch label="Late" value={editLate} onValueChange={setEditLate} />
             <RowSwitch label="Left Early" value={editLeftEarly} onValueChange={setEditLeftEarly} />
 
-            <TextInput placeholder="note (optional)" value={editNote} onChangeText={setEditNote} style={styles.note} />
+            <TextInput
+              placeholder="note (optional)"
+              value={editNote}
+              onChangeText={setEditNote}
+              style={styles.note}
+            />
 
             <View style={{ flexDirection: "row", gap: 12, marginTop: 12 }}>
               <Button title="Save" onPress={saveOverride} disabled={!isAuthed} />
@@ -530,17 +489,6 @@ const styles = StyleSheet.create({
 
   title: { fontSize: 22, fontWeight: "800", marginTop: 8, color: COLORS.text },
   sub: { color: COLORS.textMuted, marginBottom: 10 },
-
-  sectionTitle: { fontSize: 16, fontWeight: "800", marginBottom: 6, color: COLORS.text },
-  fieldLabel: { color: COLORS.text, marginTop: 6, fontWeight: "700" },
-  input: {
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 4,
-    backgroundColor: COLORS.cardBg,
-  },
 
   actions: { flexDirection: "row", gap: SPACING.md, marginVertical: 8, flexWrap: "wrap" },
 
