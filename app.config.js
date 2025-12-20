@@ -34,7 +34,7 @@ export default ({ config }) => {
     // ---- Android ----
     android: {
       package: "com.kenta0015.geoattendance.internal",
-      versionCode: 4,
+      versionCode: 6,
       permissions: [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",

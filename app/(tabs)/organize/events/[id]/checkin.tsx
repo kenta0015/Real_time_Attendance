@@ -97,7 +97,8 @@ export default function CheckinScreen() {
       (a.name || "").localeCompare(b.name || "")
     );
 
-    if (filter === "going") return [...goingCheckedSorted, ...goingNotCheckedSorted];
+    if (filter === "going")
+      return [...goingCheckedSorted, ...goingNotCheckedSorted];
     if (filter === "not_going") return notGoingSorted;
     return [...goingCheckedSorted, ...goingNotCheckedSorted, ...notGoingSorted];
   }, [filter, goingChecked, goingNotChecked, notGoingAll]);
@@ -130,58 +131,53 @@ export default function CheckinScreen() {
     setLoadingMore(false);
   }, [eventId, loadingMore, hasMore]);
 
-  const renderItem = useCallback(
-    ({ item }: { item: ListItem }) => {
-      const when =
-        item.checked_in_at_utc &&
-        new Date(item.checked_in_at_utc).toLocaleString();
-      const missingName = !item.name || item.name === "(No name)";
+  const renderItem = useCallback(({ item }: { item: ListItem }) => {
+    const when =
+      item.checked_in_at_utc &&
+      new Date(item.checked_in_at_utc).toLocaleString();
+    const missingName = !item.name || item.name === "(No name)";
 
-      return (
-        <Card style={styles.card}>
-          <View style={styles.row}>
-            <View style={{ flex: 1, paddingRight: SPACING.sm }}>
-              <View style={styles.nameLine}>
-                <Text style={styles.name} numberOfLines={1}>
-                  {item.name || "(No name)"}
-                </Text>
-                {item.rsvp_status !== null ? (
-                  <LocalPill
-                    label={item.rsvp_status === "going" ? "Going" : "Not going"}
-                    tone={item.rsvp_status === "going" ? "info" : "muted"}
-                  />
-                ) : (
-                  <LocalPill label="Unanswered" tone="idle" />
-                )}
-              </View>
-              <Text style={styles.sub}>
-                {item.checked_in_at_utc
-                  ? `Checked in: ${when}`
-                  : "Not checked-in"}
+    return (
+      <Card style={styles.card}>
+        <View style={styles.row}>
+          <View style={{ flex: 1, paddingRight: SPACING.sm }}>
+            <View style={styles.nameLine}>
+              <Text style={styles.name} numberOfLines={1}>
+                {item.name || "(No name)"}
               </Text>
+              {item.rsvp_status !== null ? (
+                <LocalPill
+                  label={item.rsvp_status === "going" ? "Going" : "Not going"}
+                  tone={item.rsvp_status === "going" ? "info" : "muted"}
+                />
+              ) : (
+                <LocalPill label="Unanswered" tone="idle" />
+              )}
             </View>
-            <LocalPill
-              label={item.checked_in_at_utc ? "Checked in" : "Not checked-in"}
-              tone={item.checked_in_at_utc ? "success" : "idle"}
-            />
+            <Text style={styles.sub}>
+              {item.checked_in_at_utc ? `Checked in: ${when}` : "Not checked-in"}
+            </Text>
           </View>
+          <LocalPill
+            label={item.checked_in_at_utc ? "Checked in" : "Not checked-in"}
+            tone={item.checked_in_at_utc ? "success" : "idle"}
+          />
+        </View>
 
-          {missingName && (
-            <View style={{ marginTop: SPACING.md }}>
-              <Button
-                title="Add name"
-                onPress={() => openNameModal(item.user_id, item.name)}
-              />
-              <Text style={styles.hint}>
-                Set attendee name and phone for roster clarity.
-              </Text>
-            </View>
-          )}
-        </Card>
-      );
-    },
-    []
-  );
+        {missingName && (
+          <View style={{ marginTop: SPACING.md }}>
+            <Button
+              title="Add name"
+              onPress={() => openNameModal(item.user_id, item.name)}
+            />
+            <Text style={styles.hint}>
+              Set attendee name and phone for roster clarity.
+            </Text>
+          </View>
+        )}
+      </Card>
+    );
+  }, []);
 
   const keyExtractor = useCallback((x: ListItem) => `${x.user_id}`, []);
 
@@ -197,7 +193,12 @@ export default function CheckinScreen() {
 
   const didFallbackRef = useRef(false);
   useEffect(() => {
-    if (!loading && filter === "going" && goingCount === 0 && !didFallbackRef.current) {
+    if (
+      !loading &&
+      filter === "going" &&
+      goingCount === 0 &&
+      !didFallbackRef.current
+    ) {
       setFilter("all");
       didFallbackRef.current = true;
     }
@@ -291,30 +292,32 @@ export default function CheckinScreen() {
 
   // --- optimized counts (gps/qr only for present) ---
   async function fetchCounts(evId: string) {
-    const [goingMeta, presentMeta, membersMeta, unansweredMeta] = await Promise.all([
-      supabase
-        .from("event_members")
-        .select("user_id", { head: true, count: "exact" })
-        .eq("event_id", evId)
-        .eq("rsvp_status", "going"),
-      supabase
-        .from("attendance")
-        .select("user_id", { head: true, count: "exact" })
-        .eq("event_id", evId)
-        .in("method", ["gps", "qr"]),
-      supabase
-        .from("event_members")
-        .select("user_id", { head: true, count: "exact" })
-        .eq("event_id", evId),
-      supabase
-        .from("event_members")
-        .select("user_id", { head: true, count: "exact" })
-        .eq("event_id", evId)
-        .is("rsvp_status", null),
-    ]);
+    const [goingMeta, presentMeta, membersMeta, unansweredMeta] =
+      await Promise.all([
+        supabase
+          .from("event_members")
+          .select("user_id", { head: true, count: "exact" })
+          .eq("event_id", evId)
+          .eq("rsvp_status", "going"),
+        supabase
+          .from("attendance")
+          .select("user_id", { head: true, count: "exact" })
+          .eq("event_id", evId)
+          .in("method", ["gps", "qr"]),
+        supabase
+          .from("event_members")
+          .select("user_id", { head: true, count: "exact" })
+          .eq("event_id", evId),
+        supabase
+          .from("event_members")
+          .select("user_id", { head: true, count: "exact" })
+          .eq("event_id", evId)
+          .is("rsvp_status", null),
+      ]);
 
     if (typeof goingMeta.count === "number") setGoingCount(goingMeta.count ?? 0);
-    if (typeof presentMeta.count === "number") setPresentCount(presentMeta.count ?? 0);
+    if (typeof presentMeta.count === "number")
+      setPresentCount(presentMeta.count ?? 0);
     if (typeof membersMeta.count === "number")
       setMemberTotalCount(membersMeta.count ?? 0);
     if (typeof unansweredMeta.count === "number")
@@ -367,21 +370,26 @@ export default function CheckinScreen() {
       return;
     }
 
-    // --- profiles (user_profile.user_id is TEXTなので combinedIds そのまま) ---
+    // --- profiles (user_profile.user_id is TEXT so combinedIds can be used as-is) ---
     const { data: profileRowsRaw } = await supabase
       .from("user_profile")
-      .select("user_id, name:ice_name")
+      .select("user_id, display_name, ice_name")
       .in("user_id", combinedIds);
 
     const profileRows =
-      (profileRowsRaw as { user_id: string; name: string | null }[] | null) ?? [];
+      (profileRowsRaw as {
+        user_id: string;
+        display_name: string | null;
+        ice_name: string | null;
+      }[] | null) ?? [];
 
     const nameMap = new Map<string, string>();
     profileRows.forEach((p) => {
-      nameMap.set(String(p.user_id), p.name ?? "");
+      const bestName = (p.display_name ?? p.ice_name ?? "").trim();
+      nameMap.set(String(p.user_id), bestName);
     });
 
-    // --- attendance timestamps (UUIDだけをINに渡す / gps+qr 限定) ---
+    // --- attendance timestamps (only pass UUIDs to IN; limited to gps+qr) ---
     const uuidOnly = combinedIds.filter(isUuid);
     let attMap = new Map<string, string | null>();
     if (uuidOnly.length > 0) {
@@ -414,14 +422,16 @@ export default function CheckinScreen() {
 
     const pageItems: ListItem[] = combinedIds.map((uid) => ({
       user_id: uid,
-      name: nameMap.get(uid) ?? "(No name)",
+      name: (nameMap.get(uid) ?? "").trim() || "(No name)",
       rsvp_status: rsvpMap.get(uid) ?? null,
       checked_in_at_utc: attMap.get(uid) ?? null,
     }));
 
     setItems((prev) => {
       const merged = mergeItemsNonNullWins(replace ? [] : prev, pageItems);
-      offsetRef.current = replace ? memberIds.length : offsetRef.current + memberIds.length;
+      offsetRef.current = replace
+        ? memberIds.length
+        : offsetRef.current + memberIds.length;
       return merged;
     });
   }
@@ -432,24 +442,28 @@ export default function CheckinScreen() {
     const trimmedPhone = editPhone.trim();
 
     setSavingProfile(true);
+    const payload: Record<string, unknown> = {
+      user_id: String(editUserId), // user_profile.user_id is text
+      ice_phone: trimmedPhone || null,
+    };
+
+    if (trimmedName) {
+      // Keep both fields in sync so older data (ice_name) and newer data (display_name) show consistently.
+      payload.display_name = trimmedName;
+      payload.ice_name = trimmedName;
+    }
+
     const { error } = await supabase
       .from("user_profile")
-      .upsert(
-        [
-          {
-            user_id: String(editUserId), // user_profile.user_id is text
-            ice_name: trimmedName || null,
-            ice_phone: trimmedPhone || null,
-          },
-        ],
-        { onConflict: "user_id" }
-      );
+      .upsert([payload], { onConflict: "user_id" });
 
     setSavingProfile(false);
     if (!error) {
       setItems((prev) =>
         prev.map((it) =>
-          it.user_id === editUserId ? { ...it, name: trimmedName || "(No name)" } : it
+          it.user_id === editUserId
+            ? { ...it, name: trimmedName ? trimmedName : it.name }
+            : it
         )
       );
       setNameModalOpen(false);
@@ -479,7 +493,10 @@ function Header(props: {
       </View>
 
       {showUnanswered && (
-        <Pressable onPress={props.onPressUnanswered} style={styles.unansweredChip}>
+        <Pressable
+          onPress={props.onPressUnanswered}
+          style={styles.unansweredChip}
+        >
           <Text style={styles.unansweredChipText}>
             Unanswered ({props.unansweredCount})
           </Text>
@@ -799,11 +816,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#00000066",
     justifyContent: "center",
-    padding: SPACING.lg,
+    paddingHorizontal: SPACING.lg,
   },
   modalCard: {
     backgroundColor: COLORS.cardBg,
-    borderRadius: RADIUS.xl,
+    borderRadius: RADIUS.lg,
     padding: SPACING.lg,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -819,16 +836,16 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     opacity: 0.8,
     marginTop: SPACING.sm,
-    marginBottom: 4,
+    marginBottom: 6,
   },
   input: {
     borderWidth: 1,
     borderColor: COLORS.border,
+    backgroundColor: COLORS.bg,
     borderRadius: RADIUS.lg,
     paddingHorizontal: SPACING.md,
-    paddingVertical: Platform.select({ ios: 12, android: 10 }),
+    paddingVertical: SPACING.sm,
     color: COLORS.text,
-    backgroundColor: COLORS.bg,
   },
   modalButtons: {
     flexDirection: "row",
