@@ -44,3 +44,7 @@ ios/
 android/
 
 ios/
+
+# secrets & backups
+.env
+__backup_routes__/tabs_qr/qr.tsx.bak
