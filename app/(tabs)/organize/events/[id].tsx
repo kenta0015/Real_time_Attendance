@@ -14,14 +14,11 @@ import {
 } from "react-native";
 import { useLocalSearchParams, router, usePathname } from "expo-router";
 import * as Location from "expo-location";
-import * as TaskManager from "expo-task-manager";
-import * as Notifications from "expo-notifications";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../../../../lib/supabase";
 import { haversineMeters, accuracyThreshold } from "../../../../lib/geo";
 import { getGuestId } from "../../../../stores/session";
 import { useEffectiveRole } from "../../../../stores/devRole";
-import { GEOFENCE_TASK } from "../../../../lib/geofence";
 import { armGeofenceAt, disarmGeofence, geofenceStatus } from "../../../../lib/geofenceActions";
 
 type EventRow = {
@@ -40,6 +37,21 @@ type RSVPStatus = "going" | "not_going" | null;
 const BLUE = "#2563EB";
 const CARD_BORDER = "#E5E7EB";
 const DISCLOSURE_KEY = "@geoattendance.locationDisclosure.v1";
+const PROOF_LOG_KEY = "@geoattendance.proofLog.v1";
+
+type ProofLogDecision = "blocked" | "allowed" | "started" | "stopped" | "error";
+type ProofLogAction = "start" | "stop" | "status";
+
+type ProofLogEntry = {
+  at: string; // ISO
+  action: ProofLogAction;
+  decision: ProofLogDecision;
+  reason?: string;
+  event_id?: string | null;
+  role?: string | null;
+  platform?: string;
+  meta?: Record<string, any>;
+};
 
 // --- helpers -----------------------------------------------------------------
 function Row({ label, value }: { label: string; value: string }) {
@@ -49,6 +61,56 @@ function Row({ label, value }: { label: string; value: string }) {
       <Text style={styles.rowValue}>{value}</Text>
     </View>
   );
+}
+
+function safeIsoNow() {
+  try {
+    return new Date().toISOString();
+  } catch {
+    return String(Date.now());
+  }
+}
+
+function formatProofLine(e: ProofLogEntry): string {
+  const when = (() => {
+    try {
+      return new Date(e.at).toLocaleString();
+    } catch {
+      return e.at;
+    }
+  })();
+  const action = e.action.toUpperCase();
+  const decision = e.decision.toUpperCase();
+  const reason = e.reason ? ` — ${e.reason}` : "";
+  const eventPart = e.event_id ? ` (event=${String(e.event_id).slice(0, 8)}…)` : "";
+  return `[${when}] ${action} ${decision}${eventPart}${reason}`;
+}
+
+async function readProofLog(): Promise<ProofLogEntry[]> {
+  try {
+    const raw = await AsyncStorage.getItem(PROOF_LOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(Boolean) as ProofLogEntry[];
+  } catch {
+    return [];
+  }
+}
+
+async function appendProofLog(entry: ProofLogEntry) {
+  try {
+    const existing = await readProofLog();
+    const next = [...existing, entry];
+    const capped = next.slice(Math.max(0, next.length - 60));
+    await AsyncStorage.setItem(PROOF_LOG_KEY, JSON.stringify(capped));
+  } catch {}
+}
+
+async function clearProofLog() {
+  try {
+    await AsyncStorage.removeItem(PROOF_LOG_KEY);
+  } catch {}
 }
 
 async function getEffectiveUserId(): Promise<string> {
@@ -65,96 +127,35 @@ function clampRadius(input?: number | null) {
   return Math.min(150, Math.max(100, Math.floor(v)));
 }
 
-function parseEventIdFromIdentifier(id?: string | null) {
-  if (!id) return null;
-  const m = /^event:(.+)$/.exec(id);
-  return m ? m[1] : null;
+function parseUtcMs(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
 }
 
-async function getDeviceLabel(): Promise<string> {
-  let label = Platform.OS;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const Device: any = require("expo-device");
-    label = Device?.modelName || Device?.deviceName || Device?.manufacturer || Platform.OS;
-  } catch {
-    // keep fallback
-  }
-  return label;
+function isNowWithinEventWindowUtc(event: Pick<EventRow, "start_utc" | "end_utc">): {
+  ok: boolean;
+  nowMs: number;
+  startMs: number | null;
+  endMs: number | null;
+} {
+  const nowMs = Date.now();
+  const startMs = parseUtcMs(event.start_utc);
+  const endMs = parseUtcMs(event.end_utc);
+  if (startMs == null || endMs == null) return { ok: false, nowMs, startMs, endMs };
+  return { ok: startMs <= nowMs && nowMs <= endMs, nowMs, startMs, endMs };
 }
 
-async function notify(title: string, body?: string) {
+async function openAppSettingsSafe() {
   try {
-    const p = await Notifications.getPermissionsAsync();
-    if (!p.granted) {
-      await Notifications.requestPermissionsAsync();
+    if (typeof Linking.openSettings === "function") {
+      await Linking.openSettings();
+      return;
     }
-    await Notifications.scheduleNotificationAsync({
-      content: { title, body: body ?? "" },
-      trigger: null,
-    });
   } catch {}
-}
-
-// --- Background task (define once) -------------------------------------------
-if (!TaskManager.isTaskDefined(GEOFENCE_TASK)) {
-  TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
-    try {
-      if (error) {
-        console.warn("[geofence] task error:", error);
-        return;
-      }
-      const payload = (data ?? {}) as any;
-      const eventType: number | undefined = payload?.eventType;
-      const region: Location.LocationRegion | undefined = payload?.region;
-
-      const dir: "ENTER" | "EXIT" =
-        eventType === Location.GeofencingEventType.Enter ? "ENTER" : "EXIT";
-      const at = new Date();
-
-      const eventId = parseEventIdFromIdentifier(region?.identifier) ?? null;
-
-      const { data: udata } = await supabase.auth.getUser();
-      const userId = udata?.user?.id ?? null;
-
-      const device = await getDeviceLabel();
-
-      const minuteKey = at.toISOString().slice(0, 16); // YYYY-MM-DDTHH:MM
-      const idem = `${eventId ?? "?"}:${userId ?? "?"}:${dir}:${minuteKey}`;
-
-      let acc: number | null = null;
-      try {
-        const last = await Location.getLastKnownPositionAsync();
-        acc = last?.coords?.accuracy ?? null;
-      } catch {}
-
-      await supabase.from("geofence_events").upsert(
-        {
-          event_id: eventId,
-          user_id: userId,
-          dir,
-          at: at.toISOString(),
-          region_id: region?.identifier ?? null,
-          acc_m: acc == null ? null : Math.round(acc),
-          device,
-          idem,
-        },
-        { onConflict: "idem" }
-      );
-
-      await notify(`Geofence ${dir}`, `${region?.identifier ?? "region"} @ ${minuteKey}`);
-
-      try {
-        DeviceEventEmitter.emit("rta_geofence_event", {
-          dir,
-          event_id: eventId,
-          at: at.toISOString(),
-        });
-      } catch {}
-    } catch (e) {
-      console.warn("[geofence] handler exception]:", e);
-    }
-  });
+  try {
+    await Linking.openURL("app-settings:");
+  } catch {}
 }
 
 // =============================================================================
@@ -175,6 +176,48 @@ export default function OrganizeEventDetail() {
   }, [pathname, eid]);
 
   const role = useEffectiveRole();
+
+  // === Proof log preview ======================================================
+  const [proofLastLine, setProofLastLine] = useState<string>("—");
+  const [proofCount, setProofCount] = useState<number>(0);
+
+  const refreshProofPreview = useCallback(async () => {
+    const entries = await readProofLog();
+    setProofCount(entries.length);
+    const last = entries.length > 0 ? entries[entries.length - 1] : null;
+    setProofLastLine(last ? formatProofLine(last) : "—");
+  }, []);
+
+  useEffect(() => {
+    refreshProofPreview();
+  }, [refreshProofPreview]);
+
+  const showProofLog = useCallback(async () => {
+    const entries = await readProofLog();
+    setProofCount(entries.length);
+    if (!entries.length) {
+      Alert.alert("Proof log", "No entries yet.");
+      return;
+    }
+    const lastN = entries.slice(Math.max(0, entries.length - 12));
+    const text = lastN.map(formatProofLine).join("\n");
+    Alert.alert("Proof log (last entries)", text);
+  }, []);
+
+  const handleClearProofLog = useCallback(() => {
+    Alert.alert("Clear proof log", "This will remove local proof logs on this device.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Clear",
+        style: "destructive",
+        onPress: async () => {
+          await clearProofLog();
+          await refreshProofPreview();
+          Alert.alert("Cleared", "Proof log cleared.");
+        },
+      },
+    ]);
+  }, [refreshProofPreview]);
 
   // === Event load ============================================================
   const [loading, setLoading] = useState(true);
@@ -302,18 +345,15 @@ export default function OrganizeEventDetail() {
       if ((pos.coords.accuracy ?? 9999) > accThresh) {
         Alert.alert(
           "Low accuracy",
-          `Accuracy ${Math.round(
-            pos.coords.accuracy ?? 0
-          )}m > threshold ${Math.round(accThresh)}m. Move to open area and try again.`
+          `Accuracy ${Math.round(pos.coords.accuracy ?? 0)}m > threshold ${Math.round(
+            accThresh
+          )}m. Move to open area and try again.`
         );
         setGpsBusy(false);
         return;
       }
       if (distM > radiusM) {
-        Alert.alert(
-          "Outside gate",
-          `Distance ${Math.round(distM)}m > radius ${radiusM}m.`
-        );
+        Alert.alert("Outside gate", `Distance ${Math.round(distM)}m > radius ${radiusM}m.`);
         setGpsBusy(false);
         return;
       }
@@ -394,64 +434,367 @@ export default function OrganizeEventDetail() {
   const handleStartAttendeeCheck = useCallback(async () => {
     if (!eventRow) return;
 
+    const baseMeta = {
+      route_id: eid,
+      event_id: eventRow.id,
+      role,
+      platform: Platform.OS,
+    };
+
+    if (role !== "organizer") {
+      console.info("[live] blocked: role", { role });
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "start",
+        decision: "blocked",
+        reason: "role_not_organizer",
+        event_id: eventRow.id,
+        role,
+        platform: Platform.OS,
+        meta: baseMeta,
+      });
+      await refreshProofPreview();
+      Alert.alert("Not allowed", "Only organizers can start attendee check.");
+      return;
+    }
+
+    if (Platform.OS === "web") {
+      console.info("[live] blocked: platform=web");
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "start",
+        decision: "blocked",
+        reason: "platform_web",
+        event_id: eventRow.id,
+        role,
+        platform: Platform.OS,
+        meta: baseMeta,
+      });
+      await refreshProofPreview();
+      Alert.alert("Not supported", "Live attendee check is not supported on web.");
+      return;
+    }
+
+    const win = isNowWithinEventWindowUtc(eventRow);
+    if (!win.ok) {
+      console.info("[live] blocked: not_in_window", {
+        nowMs: win.nowMs,
+        startMs: win.startMs,
+        endMs: win.endMs,
+        start_utc: eventRow.start_utc,
+        end_utc: eventRow.end_utc,
+      });
+
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "start",
+        decision: "blocked",
+        reason: "not_in_event_window",
+        event_id: eventRow.id,
+        role,
+        platform: Platform.OS,
+        meta: {
+          ...baseMeta,
+          nowMs: win.nowMs,
+          startMs: win.startMs,
+          endMs: win.endMs,
+          start_utc: eventRow.start_utc,
+          end_utc: eventRow.end_utc,
+        },
+      });
+      await refreshProofPreview();
+
+      const startText = eventRow.start_utc ? new Date(eventRow.start_utc).toUTCString() : "—";
+      const endText = eventRow.end_utc ? new Date(eventRow.end_utc).toUTCString() : "—";
+      Alert.alert(
+        "Not in event time window",
+        `Live attendee check can only start during the event.\n\nStart (UTC): ${startText}\nEnd (UTC): ${endText}`
+      );
+      return;
+    }
+
     try {
-      // 1) Check if disclosure was accepted; if not, show the explanation screen.
       const accepted = await AsyncStorage.getItem(DISCLOSURE_KEY);
       if (accepted !== "accepted") {
+        console.info("[live] blocked: disclosure_not_accepted");
+        await appendProofLog({
+          at: safeIsoNow(),
+          action: "start",
+          decision: "blocked",
+          reason: "disclosure_not_accepted",
+          event_id: eventRow.id,
+          role,
+          platform: Platform.OS,
+          meta: baseMeta,
+        });
+        await refreshProofPreview();
+
         router.push({
           pathname: "/location-disclosure",
           params: { next: `/organize/events/${eventRow.id}` },
         } as any);
         return;
       }
-    } catch {
-      // If AsyncStorage fails, we still proceed but it's very unlikely.
+    } catch (e: any) {
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "start",
+        decision: "error",
+        reason: "disclosure_storage_error",
+        event_id: eventRow.id,
+        role,
+        platform: Platform.OS,
+        meta: { ...baseMeta, message: e?.message },
+      });
+      await refreshProofPreview();
     }
 
     try {
       setAttendeeStartBusy(true);
 
+      let fg: Location.PermissionResponse | null = null;
+      let bg: Location.PermissionResponse | null = null;
+
+      try {
+        fg = await Location.getForegroundPermissionsAsync();
+      } catch (e: any) {
+        console.info("[live] blocked: fg_perm_error", { message: e?.message });
+        await appendProofLog({
+          at: safeIsoNow(),
+          action: "start",
+          decision: "error",
+          reason: "foreground_permission_read_failed",
+          event_id: eventRow.id,
+          role,
+          platform: Platform.OS,
+          meta: { ...baseMeta, message: e?.message },
+        });
+        await refreshProofPreview();
+        Alert.alert("Permission check failed", "Unable to read location permission status.");
+        return;
+      }
+
+      try {
+        bg = await Location.getBackgroundPermissionsAsync();
+      } catch (e: any) {
+        console.info("[live] blocked: bg_perm_error", { message: e?.message });
+        await appendProofLog({
+          at: safeIsoNow(),
+          action: "start",
+          decision: "error",
+          reason: "background_permission_read_failed",
+          event_id: eventRow.id,
+          role,
+          platform: Platform.OS,
+          meta: { ...baseMeta, message: e?.message },
+        });
+        await refreshProofPreview();
+        Alert.alert("Permission check failed", "Unable to read background location permission status.");
+        return;
+      }
+
+      const fgGranted = !!fg?.granted || fg?.status === "granted";
+      const bgGranted = !!bg?.granted || bg?.status === "granted";
+
+      if (!fgGranted || !bgGranted) {
+        console.info("[live] blocked: permission", {
+          fg: { status: fg?.status, granted: fg?.granted, canAskAgain: fg?.canAskAgain },
+          bg: { status: bg?.status, granted: bg?.granted, canAskAgain: bg?.canAskAgain },
+        });
+
+        await appendProofLog({
+          at: safeIsoNow(),
+          action: "start",
+          decision: "blocked",
+          reason: "always_permission_missing",
+          event_id: eventRow.id,
+          role,
+          platform: Platform.OS,
+          meta: {
+            ...baseMeta,
+            fg: { status: fg?.status, granted: fg?.granted, canAskAgain: fg?.canAskAgain },
+            bg: { status: bg?.status, granted: bg?.granted, canAskAgain: bg?.canAskAgain },
+          },
+        });
+        await refreshProofPreview();
+
+        Alert.alert(
+          "Always location required",
+          "Live attendee check requires Always / Background location permission. Please enable it in Settings.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Open Settings",
+              onPress: () => {
+                openAppSettingsSafe();
+              },
+            },
+          ]
+        );
+        return;
+      }
+
       const lat = eventRow.venue_lat;
       const lng = eventRow.venue_lng;
       if (lat == null || lng == null) {
+        console.info("[live] blocked: missing_location", { lat, lng });
+        await appendProofLog({
+          at: safeIsoNow(),
+          action: "start",
+          decision: "blocked",
+          reason: "missing_event_location",
+          event_id: eventRow.id,
+          role,
+          platform: Platform.OS,
+          meta: { ...baseMeta, lat, lng },
+        });
+        await refreshProofPreview();
+
         Alert.alert("Missing location", "This event does not have a valid venue location.");
         return;
       }
 
       const radius = clampRadius(eventRow.venue_radius_m);
-      await armGeofenceAt({ latitude: lat, longitude: lng }, radius);
+
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "start",
+        decision: "allowed",
+        reason: "all_guards_passed",
+        event_id: eventRow.id,
+        role,
+        platform: Platform.OS,
+        meta: { ...baseMeta, lat, lng, radius },
+      });
+
+      await armGeofenceAt({ latitude: lat, longitude: lng }, radius, {
+        eventId: eventRow.id,
+        notify: false,
+      });
 
       await refreshAttendeeCheckStatus();
-      Alert.alert(
-        "Attendee check started",
-        "This device will automatically log arrivals and exits."
-      );
+
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "start",
+        decision: "started",
+        reason: "geofence_started",
+        event_id: eventRow.id,
+        role,
+        platform: Platform.OS,
+        meta: { ...baseMeta, lat, lng, radius },
+      });
+      await refreshProofPreview();
+
+      Alert.alert("Attendee check started", "This device will automatically log arrivals and exits.");
     } catch (e: any) {
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "start",
+        decision: "error",
+        reason: "start_failed",
+        event_id: eventRow?.id ?? null,
+        role,
+        platform: Platform.OS,
+        meta: { ...baseMeta, message: e?.message },
+      });
+      await refreshProofPreview();
       Alert.alert("Failed to start", e?.message ?? "Unable to start attendee check.");
     } finally {
       setAttendeeStartBusy(false);
     }
-  }, [eventRow, refreshAttendeeCheckStatus]);
+  }, [eid, eventRow, refreshAttendeeCheckStatus, refreshProofPreview, role]);
 
   const handleStopAttendeeCheck = useCallback(async () => {
+    const evId = eventRow?.id ?? null;
+
+    if (role !== "organizer") {
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "stop",
+        decision: "blocked",
+        reason: "role_not_organizer",
+        event_id: evId,
+        role,
+        platform: Platform.OS,
+        meta: { event_id: evId, role, platform: Platform.OS, route_id: eid },
+      });
+      await refreshProofPreview();
+      Alert.alert("Not allowed", "Only organizers can stop attendee check.");
+      return;
+    }
+
     try {
       setAttendeeStopBusy(true);
       await disarmGeofence();
       await refreshAttendeeCheckStatus();
+
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "stop",
+        decision: "stopped",
+        reason: "geofence_stopped",
+        event_id: evId,
+        role,
+        platform: Platform.OS,
+        meta: { event_id: evId, role, platform: Platform.OS, route_id: eid },
+      });
+      await refreshProofPreview();
+
       Alert.alert("Attendee check stopped");
     } catch (e: any) {
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "stop",
+        decision: "error",
+        reason: "stop_failed",
+        event_id: evId,
+        role,
+        platform: Platform.OS,
+        meta: { event_id: evId, role, platform: Platform.OS, route_id: eid, message: e?.message },
+      });
+      await refreshProofPreview();
+
       Alert.alert("Failed to stop", e?.message ?? "Unable to stop attendee check.");
     } finally {
       setAttendeeStopBusy(false);
     }
-  }, [refreshAttendeeCheckStatus]);
+  }, [eid, eventRow, refreshAttendeeCheckStatus, refreshProofPreview, role]);
 
   const handleShowAttendeeStatus = useCallback(async () => {
     await refreshAttendeeCheckStatus();
-    Alert.alert("Attendee check", attendeeCheckStatus);
-  }, [attendeeCheckStatus, refreshAttendeeCheckStatus]);
 
-  // === Delete event (Organizer) =============================================
+    try {
+      const { started } = await geofenceStatus();
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "status",
+        decision: "allowed",
+        reason: "status_checked",
+        event_id: eventRow?.id ?? null,
+        role,
+        platform: Platform.OS,
+        meta: { event_id: eventRow?.id ?? null, role, platform: Platform.OS, started },
+      });
+      await refreshProofPreview();
+    } catch (e: any) {
+      await appendProofLog({
+        at: safeIsoNow(),
+        action: "status",
+        decision: "error",
+        reason: "status_check_failed",
+        event_id: eventRow?.id ?? null,
+        role,
+        platform: Platform.OS,
+        meta: { event_id: eventRow?.id ?? null, role, platform: Platform.OS, message: e?.message },
+      });
+      await refreshProofPreview();
+    }
+
+    Alert.alert("Attendee check", attendeeCheckStatus);
+  }, [attendeeCheckStatus, eventRow, refreshAttendeeCheckStatus, refreshProofPreview, role]);
+
+  // === Delete event (Organizer) ==============================================
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   const handleDeleteEvent = useCallback(() => {
@@ -539,12 +882,7 @@ export default function OrganizeEventDetail() {
               onPress={() => saveRsvp("going")}
               disabled={rsvpBusy}
             >
-              <Text
-                style={[
-                  styles.rsvpChipText,
-                  rsvp === "going" && styles.rsvpChipTextActive,
-                ]}
-              >
+              <Text style={[styles.rsvpChipText, rsvp === "going" && styles.rsvpChipTextActive]}>
                 Going
               </Text>
             </TouchableOpacity>
@@ -575,13 +913,7 @@ export default function OrganizeEventDetail() {
               />
               <Row
                 label="Inside radius?"
-                value={
-                  devInside == null
-                    ? "—"
-                    : devInside
-                    ? "Yes (inside)"
-                    : "No (outside)"
-                }
+                value={devInside == null ? "—" : devInside ? "Yes (inside)" : "No (outside)"}
               />
               <TouchableOpacity
                 style={[styles.btnOutline, devBusy && { opacity: 0.6 }]}
@@ -596,14 +928,8 @@ export default function OrganizeEventDetail() {
           ) : null}
 
           <View style={{ height: 10 }} />
-          <TouchableOpacity
-            style={[styles.btnOutline]}
-            onPress={handleGpsCheckin}
-            disabled={gpsBusy}
-          >
-            <Text style={styles.btnOutlineText}>
-              {gpsBusy ? "Checking…" : "CHECK IN (GPS)"}
-            </Text>
+          <TouchableOpacity style={[styles.btnOutline]} onPress={handleGpsCheckin} disabled={gpsBusy}>
+            <Text style={styles.btnOutlineText}>{gpsBusy ? "Checking…" : "CHECK IN (GPS)"}</Text>
           </TouchableOpacity>
 
           {lastCheckinAt ? (
@@ -624,7 +950,6 @@ export default function OrganizeEventDetail() {
         <View style={styles.card}>
           <Text style={styles.sectionLabel}>Organizer</Text>
 
-          {/* Attendee auto-check (geofence) */}
           <Row label="Attendee check" value={attendeeCheckStatus} />
           <View style={{ height: 8 }} />
           <TouchableOpacity
@@ -656,6 +981,28 @@ export default function OrganizeEventDetail() {
           >
             <Text style={styles.btnOutlineText}>CHECK STATUS</Text>
           </TouchableOpacity>
+
+          <View style={styles.proofPanel}>
+            <Text style={styles.proofTitle}>PROOF LOG</Text>
+            <Row label="Entries" value={String(proofCount)} />
+            <Text style={styles.proofMono} numberOfLines={3}>
+              {proofLastLine}
+            </Text>
+
+            <View style={{ height: 8 }} />
+            <TouchableOpacity style={[styles.btnOutline]} onPress={showProofLog} disabled={deleteBusy}>
+              <Text style={styles.btnOutlineText}>VIEW PROOF LOG</Text>
+            </TouchableOpacity>
+
+            <View style={{ height: 8 }} />
+            <TouchableOpacity
+              style={[styles.btnOutline]}
+              onPress={handleClearProofLog}
+              disabled={deleteBusy}
+            >
+              <Text style={styles.btnOutlineText}>CLEAR PROOF LOG</Text>
+            </TouchableOpacity>
+          </View>
 
           <View style={{ height: 16 }} />
           <TouchableOpacity
@@ -747,9 +1094,7 @@ export default function OrganizeEventDetail() {
             onPress={handleDeleteEvent}
             disabled={deleteBusy}
           >
-            <Text style={styles.btnDangerText}>
-              {deleteBusy ? "DELETING…" : "DELETE EVENT"}
-            </Text>
+            <Text style={styles.btnDangerText}>{deleteBusy ? "DELETING…" : "DELETE EVENT"}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -884,5 +1229,23 @@ const styles = StyleSheet.create({
   },
   rsvpChipTextActive: {
     color: "#fff",
+  },
+  proofPanel: {
+    marginTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: CARD_BORDER,
+    paddingTop: 10,
+  },
+  proofTitle: {
+    fontSize: 12,
+    color: "#6B7280",
+    marginBottom: 6,
+    fontWeight: "800",
+    letterSpacing: 0.3,
+  },
+  proofMono: {
+    color: "#111827",
+    fontSize: 12,
+    lineHeight: 16,
   },
 });

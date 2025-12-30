@@ -6,6 +6,9 @@ import { Stack } from "expo-router";
 import * as Notifications from "expo-notifications";
 import * as Updates from "expo-updates";
 
+// Ensure the canonical geofence task is defined early (side-effect import).
+import "../lib/geofence";
+
 // Ultra-early logger
 import { installGlobalLogger } from "../lib/logger";
 import { devSwitchEnabled } from "../stores/devRole";
