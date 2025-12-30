@@ -24,6 +24,19 @@
       "channel": "production",
       "developmentClient": false,
       "autoIncrement": true
+    },
+    "development-simulator": {
+      "env": { "APP_ENV": "internal" },
+      "channel": "internal",
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": { "simulator": true }
+    },
+    "development": {
+      "env": { "APP_ENV": "internal" },
+      "channel": "internal",
+      "developmentClient": true,
+      "distribution": "internal"
     }
   },
   "submit": {
@@ -34,3 +47,4 @@
     }
   }
 }
+
