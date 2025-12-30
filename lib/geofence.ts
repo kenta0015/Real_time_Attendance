@@ -7,10 +7,14 @@
 // - startGeofencing(regions)
 // - stopGeofencing()
 // - setActiveEventId(eventId)
+// - setActiveEventMeta(meta)
 //
 // Behavior:
 // - Background task listens ENTER/EXIT and posts to Supabase via RPC('geofence_log') or table insert fallback.
 // - If post fails, pushes to offline queue and attempts a best-effort flush.
+// - Active event context is persisted so the background task can attach event_id even after reload.
+// - If active_event_end_utc is saved and is expired, active context is auto-cleared (best-effort stop).
+// - If event_id cannot be resolved, the geofence event is ignored (never posts/queues null event_id).
 
 import * as TaskManager from "expo-task-manager";
 import * as Location from "expo-location";
@@ -21,21 +25,139 @@ import { supabase } from "./supabase";
 import { enqueue, flushOnce, GeoEventPayload } from "./syncQueue";
 
 export const GEOFENCE_TASK = "rta-geofence";
-const ACTIVE_EVENT_KEY = "@rta.active_event_id";
+
+const ACTIVE_EVENT_KEY = "@rta.active_event_id"; // legacy (kept for backward compatibility)
+const ACTIVE_EVENT_META_KEY = "@rta.active_event_meta_v1";
 const LAST_EVENT_KEY = "@rta.geo.last.v1";
 const DEBOUNCE_SEC = 30;
 
-/** Persist active event id so the background task can attach it. */
-export async function setActiveEventId(eventId: string | null) {
-  if (!eventId) {
-    await AsyncStorage.removeItem(ACTIVE_EVENT_KEY);
+type ActiveEventMeta = {
+  event_id: string;
+  active_event_end_utc: string | null; // ISO UTC (from DB) or null
+  saved_at: string; // ISO
+};
+
+function safeIsoNow() {
+  try {
+    return new Date().toISOString();
+  } catch {
+    return String(Date.now());
+  }
+}
+
+function parseUtcMs(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+async function safeStopGeofencingIfStarted() {
+  try {
+    const started = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK).catch(() => false);
+    if (started) await Location.stopGeofencingAsync(GEOFENCE_TASK).catch(() => {});
+  } catch {}
+}
+
+/** Persist active event meta so the background task can attach event_id (+ optional strong auto-off). */
+export async function setActiveEventMeta(
+  meta: { eventId: string; endUtc: string | null } | null
+) {
+  if (!meta) {
+    try {
+      await AsyncStorage.removeItem(ACTIVE_EVENT_META_KEY);
+    } catch {}
+    try {
+      await AsyncStorage.removeItem(ACTIVE_EVENT_KEY);
+    } catch {}
     return;
   }
-  await AsyncStorage.setItem(ACTIVE_EVENT_KEY, eventId);
+
+  const eventId = String(meta.eventId ?? "").trim();
+  if (!eventId) {
+    await setActiveEventMeta(null);
+    return;
+  }
+
+  const payload: ActiveEventMeta = {
+    event_id: eventId,
+    active_event_end_utc: meta.endUtc ? String(meta.endUtc) : null,
+    saved_at: safeIsoNow(),
+  };
+
+  try {
+    await AsyncStorage.setItem(ACTIVE_EVENT_META_KEY, JSON.stringify(payload));
+  } catch {}
+
+  // Keep legacy key in sync (for older callers / fallbacks).
+  try {
+    await AsyncStorage.setItem(ACTIVE_EVENT_KEY, eventId);
+  } catch {}
+}
+
+/** Persist active event id so the background task can attach it. (Legacy-compatible) */
+export async function setActiveEventId(eventId: string | null) {
+  const normalized = eventId ? String(eventId).trim() : "";
+  if (!normalized) {
+    await setActiveEventMeta(null);
+    return;
+  }
+
+  // Preserve end_utc if already stored for the same event id.
+  const existing = await getActiveEventMetaUnsafe();
+  if (existing && existing.event_id === normalized && existing.active_event_end_utc) {
+    // Ensure legacy key is still written.
+    try {
+      await AsyncStorage.setItem(ACTIVE_EVENT_KEY, normalized);
+    } catch {}
+    return;
+  }
+
+  await setActiveEventMeta({ eventId: normalized, endUtc: null });
+}
+
+async function getActiveEventMetaUnsafe(): Promise<ActiveEventMeta | null> {
+  try {
+    const raw = await AsyncStorage.getItem(ACTIVE_EVENT_META_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ActiveEventMeta;
+    if (!parsed || typeof parsed !== "object") return null;
+    const id = String((parsed as any).event_id ?? "").trim();
+    if (!id) return null;
+
+    const end = (parsed as any).active_event_end_utc;
+    const savedAt = String((parsed as any).saved_at ?? safeIsoNow());
+    return {
+      event_id: id,
+      active_event_end_utc: end == null ? null : String(end),
+      saved_at: savedAt,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function getActiveEventId(): Promise<string | null> {
-  return (await AsyncStorage.getItem(ACTIVE_EVENT_KEY)) || null;
+  // Prefer meta key; fall back to legacy key.
+  const meta = await getActiveEventMetaUnsafe();
+
+  if (meta) {
+    const endMs = parseUtcMs(meta.active_event_end_utc);
+    if (endMs != null && Date.now() > endMs) {
+      // Strong auto-off: clear stale context and best-effort stop geofencing.
+      await setActiveEventMeta(null);
+      await safeStopGeofencingIfStarted();
+      return null;
+    }
+    return meta.event_id;
+  }
+
+  try {
+    const legacy = (await AsyncStorage.getItem(ACTIVE_EVENT_KEY)) || null;
+    const id = legacy ? String(legacy).trim() : "";
+    return id ? id : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Best-effort local notification (safe in background); ignore errors. */
@@ -75,18 +197,15 @@ async function shouldDebounce(dir: "ENTER" | "EXIT"): Promise<boolean> {
 
 /** Create idempotency key stable within a 30s window. */
 async function makeIdem(
-  eventId: string | null,
+  eventId: string,
   regionId: string | null,
   dir: "ENTER" | "EXIT",
   atIso: string
 ) {
   // Round down to 30s windows for natural idempotency across retries.
   const slot = Math.floor(Date.parse(atIso) / 1000 / DEBOUNCE_SEC);
-  const base = `${eventId ?? "null"}|${regionId ?? "null"}|${dir}|${slot}`;
-  return await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    base
-  );
+  const base = `${eventId}|${regionId ?? "null"}|${dir}|${slot}`;
+  return await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, base);
 }
 
 async function postToServer(p: GeoEventPayload): Promise<boolean> {
@@ -127,17 +246,13 @@ function defineTaskOnce() {
   try {
     TaskManager.defineTask(GEOFENCE_TASK, async ({ data, error }) => {
       if (error) {
-        await notify(
-          "Geofence task error",
-          String(error?.message ?? "Unknown error")
-        );
+        await notify("Geofence task error", String(error?.message ?? "Unknown error"));
         return;
       }
-      const eventType = (data as any)
-        ?.eventType as Location.GeofencingEventType | undefined;
-      const region = (data as any)?.region as
-        | Location.LocationRegion
-        | undefined;
+
+      const eventType = (data as any)?.eventType as Location.GeofencingEventType | undefined;
+      const region = (data as any)?.region as Location.LocationRegion | undefined;
+
       const dir: "ENTER" | "EXIT" =
         eventType === Location.GeofencingEventType.Enter
           ? "ENTER"
@@ -149,11 +264,16 @@ function defineTaskOnce() {
 
       const at = nowIso();
       const regionId = (region?.identifier as string | undefined) ?? null;
-      // Try to parse event id from identifier like "event:<id>"
+
+      // Prefer persisted active event id; fallback to identifier parsing.
       let eventId = await getActiveEventId();
       if (!eventId && regionId && regionId.startsWith("event:")) {
-        eventId = regionId.slice("event:".length);
+        const parsed = regionId.slice("event:".length).trim();
+        eventId = parsed ? parsed : null;
       }
+
+      // Phase 2 guarantee: never post/queue null event_id.
+      if (!eventId) return;
 
       const payload: GeoEventPayload = {
         event_id: eventId,
@@ -192,8 +312,7 @@ export async function ensureLocationPermissions(): Promise<{
   if (await Location.isBackgroundLocationAvailableAsync()) {
     const r = await Location.requestBackgroundPermissionsAsync();
     bg = r.status;
-    if (r.status !== "granted")
-      return { ok: false, status: f.status, bg: r.status };
+    if (r.status !== "granted") return { ok: false, status: f.status, bg: r.status };
   }
   return { ok: true, status: f.status, bg };
 }
@@ -219,9 +338,7 @@ export async function startGeofencing(regions: GeofenceRegion[]): Promise<void> 
   const p = await ensureLocationPermissions();
   if (!p.ok) throw new Error("Location permission not granted");
   try {
-    const started = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK).catch(
-      () => false
-    );
+    const started = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK).catch(() => false);
     if (started) await Location.stopGeofencingAsync(GEOFENCE_TASK).catch(() => {});
     await Location.startGeofencingAsync(GEOFENCE_TASK, regions as any);
     // trigger early flush attempt
@@ -233,9 +350,7 @@ export async function startGeofencing(regions: GeofenceRegion[]): Promise<void> 
 
 export async function stopGeofencing(): Promise<void> {
   try {
-    const started = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK).catch(
-      () => false
-    );
+    const started = await Location.hasStartedGeofencingAsync(GEOFENCE_TASK).catch(() => false);
     if (started) await Location.stopGeofencingAsync(GEOFENCE_TASK);
   } catch {}
 }

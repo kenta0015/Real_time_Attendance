@@ -1,3 +1,5 @@
+// FILE: app/(tabs)/organize/index.tsx
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
@@ -13,6 +15,7 @@ import {
   ToastAndroid,
   Linking,
   RefreshControl,
+  Modal,
 } from "react-native";
 import * as Location from "expo-location";
 import { useRouter, useLocalSearchParams } from "expo-router";
@@ -21,6 +24,8 @@ import { getGuestId } from "../../../stores/session";
 import { useEffectiveRole, type Role } from "../../../stores/devRole";
 
 type GroupRow = { id: string; name: string | null; description?: string | null };
+type MembershipRow = { group_id: string };
+
 type EventRow = {
   id: string;
   title: string | null;
@@ -35,8 +40,7 @@ type EventRow = {
 };
 
 const nowIso = () => new Date().toISOString();
-const plusHoursIso = (h: number) =>
-  new Date(Date.now() + h * 3600_000).toISOString();
+const plusHoursIso = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
 
 async function getEffectiveUserId(): Promise<string> {
   try {
@@ -45,6 +49,17 @@ async function getEffectiveUserId(): Promise<string> {
     if (uid && uid.length > 0) return uid;
   } catch {}
   return await getGuestId();
+}
+
+async function getSignedInUserId(): Promise<string | null> {
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) return null;
+    const uid = data?.user?.id ?? null;
+    return uid && uid.length > 0 ? uid : null;
+  } catch {
+    return null;
+  }
 }
 
 export default function OrganizeIndexScreen() {
@@ -72,46 +87,93 @@ export default function OrganizeIndexScreen() {
   const [windowMinutes, setWindowMinutes] = useState<string>("30");
   const [submitting, setSubmitting] = useState(false);
 
+  // Manage Groups modal
+  const [manageOpen, setManageOpen] = useState(false);
+
   const notify = (msg: string) => {
     if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
     else Alert.alert("Info", msg);
   };
 
+  const fetchEventsForGroup = useCallback(async (gid: string | null) => {
+    try {
+      if (!gid) {
+        setEvents([]);
+        return;
+      }
+
+      const ev = await supabase
+        .from("events")
+        .select("id, title, start_utc, end_utc, lat, lng, radius_m, window_minutes, location_name, group_id")
+        .eq("group_id", gid)
+        .order("start_utc", { ascending: false })
+        .limit(20);
+
+      if (ev.error) throw ev.error;
+      setEvents(ev.data ?? []);
+    } catch (e: any) {
+      setError(e?.message ?? "Failed to load events");
+      setEvents([]);
+    }
+  }, []);
+
   const fetchBootstrap = useCallback(async () => {
     try {
       setError(null);
       setLoading(true);
-      const [gr, ev] = await Promise.all([
-        supabase
-          .from("groups")
-          .select("id, name, description")
-          .order("name", { ascending: true }),
-        supabase
-          .from("events")
-          .select(
-            "id, title, start_utc, end_utc, lat, lng, radius_m, window_minutes, location_name, group_id"
-          )
-          .order("start_utc", { ascending: false })
-          .limit(20),
-      ]);
-      if (gr.error) throw gr.error;
-      if (ev.error) throw ev.error;
-      setGroups(gr.data ?? []);
-      setEvents(ev.data ?? []);
-      if (!groupId) {
-        const prefer =
-          (passedGid &&
-            (gr.data ?? []).find((g) => g.id === passedGid)?.id) ||
-          (gr.data && gr.data[0]?.id) ||
-          null;
-        if (prefer) setGroupId(prefer);
+
+      const uid = await getSignedInUserId();
+      if (!uid) {
+        setGroups([]);
+        setEvents([]);
+        setGroupId(null);
+        return;
       }
+
+      const memQuery = supabase.from("group_members").select("group_id").eq("user_id", uid);
+
+      const memRes =
+        role === "organizer"
+          ? await memQuery.eq("role", "organizer")
+          : await memQuery;
+
+      if (memRes.error) throw memRes.error;
+
+      const groupIds = ((memRes.data ?? []) as MembershipRow[]).map((m) => m.group_id);
+      if (groupIds.length === 0) {
+        setGroups([]);
+        setEvents([]);
+        setGroupId(null);
+        return;
+      }
+
+      const grRes = await supabase
+        .from("groups")
+        .select("id, name, description")
+        .in("id", groupIds)
+        .order("name", { ascending: true });
+
+      if (grRes.error) throw grRes.error;
+
+      const nextGroups = (grRes.data ?? []) as GroupRow[];
+      setGroups(nextGroups);
+
+      const hasCurrent = groupId ? nextGroups.some((g) => g.id === groupId) : false;
+
+      const nextGroupId =
+        (hasCurrent ? groupId : null) ||
+        (passedGid && nextGroups.find((g) => g.id === passedGid)?.id) ||
+        nextGroups[0]?.id ||
+        null;
+
+      setGroupId(nextGroupId);
+      await fetchEventsForGroup(nextGroupId);
     } catch (e: any) {
       setError(e?.message ?? "Failed to load");
     } finally {
       setLoading(false);
     }
-  }, [groupId, passedGid]);
+  }, [fetchEventsForGroup, groupId, passedGid, role]);
 
   useEffect(() => {
     fetchBootstrap();
@@ -129,6 +191,14 @@ export default function OrganizeIndexScreen() {
       setRefreshing(false);
     }
   }, [fetchBootstrap]);
+
+  const onSelectGroup = useCallback(
+    async (gid: string) => {
+      setGroupId(gid);
+      await fetchEventsForGroup(gid);
+    },
+    [fetchEventsForGroup]
+  );
 
   const useLocalNow = () => {
     const s = nowIso();
@@ -158,8 +228,7 @@ export default function OrganizeIndexScreen() {
 
   const isIso = (s: string) => !Number.isNaN(Date.parse(s));
   const toNum = (s: string) => Number(s);
-  const inRange = (n: number, min: number, max: number) =>
-    Number.isFinite(n) && n >= min && n <= max;
+  const inRange = (n: number, min: number, max: number) => Number.isFinite(n) && n >= min && n <= max;
 
   const canSubmit = useMemo(() => {
     if (!groupId) return false;
@@ -177,10 +246,7 @@ export default function OrganizeIndexScreen() {
 
   const onCreate = async () => {
     if (!canSubmit) {
-      Alert.alert(
-        "Invalid form",
-        "Fill group, times, lat/lng, radius, window."
-      );
+      Alert.alert("Invalid form", "Fill group, times, lat/lng, radius, window.");
       return;
     }
     setSubmitting(true);
@@ -210,26 +276,50 @@ export default function OrganizeIndexScreen() {
     }
   };
 
+  const openManageGroups = useCallback(() => {
+    setManageOpen(true);
+  }, []);
+
+  const closeManageGroups = useCallback(() => {
+    setManageOpen(false);
+  }, []);
+
+  const openMyGroups = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.auth.getUser();
+      if (error) throw error;
+
+      const uid = data?.user?.id ?? null;
+      if (!uid) {
+        Alert.alert("Sign in required", "You need to sign in to create/manage groups.", [
+          { text: "Cancel", style: "cancel" },
+          { text: "Go to Sign In", onPress: () => router.push("/join") },
+        ]);
+        return;
+      }
+
+      setManageOpen(false);
+      router.push("/me/groups");
+    } catch (e: any) {
+      Alert.alert("Failed", e?.message ?? "Unable to open groups");
+    }
+  }, [router]);
+
   if (loading) {
     return (
-      <View
-        style={[
-          styles.container,
-          { justifyContent: "center", alignItems: "center" },
-        ]}
-      >
+      <View style={[styles.container, { justifyContent: "center", alignItems: "center" }]}>
         <ActivityIndicator />
       </View>
     );
   }
 
+  const showRecentGroupChips = role !== "organizer";
+
   return (
     <ScrollView
       style={styles.container}
       contentContainerStyle={{ paddingBottom: 32 }}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-      }
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
     >
       <Text style={styles.header}>Organize</Text>
 
@@ -243,9 +333,16 @@ export default function OrganizeIndexScreen() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Create event</Text>
 
-          <Text style={styles.label}>Group</Text>
+          <View style={styles.row}>
+            <Text style={[styles.label, styles.rowLabel]}>Group</Text>
+
+            <TouchableOpacity style={styles.btnSmall} onPress={openManageGroups}>
+              <Text style={styles.btnSmallText}>MANAGE GROUPS</Text>
+            </TouchableOpacity>
+          </View>
+
           {groups.length === 0 ? (
-            <Text style={styles.help}>No groups. Create one first.</Text>
+            <Text style={styles.help}>No organizer groups. Create one first.</Text>
           ) : (
             <FlatList
               data={groups}
@@ -256,18 +353,8 @@ export default function OrganizeIndexScreen() {
               renderItem={({ item }) => {
                 const active = groupId === item.id;
                 return (
-                  <TouchableOpacity
-                    style={[styles.chip, active && styles.chipActive]}
-                    onPress={() => setGroupId(item.id)}
-                  >
-                    <Text
-                      style={[
-                        styles.chipText,
-                        active && styles.chipTextActive,
-                      ]}
-                    >
-                      {item.name ?? "(Untitled group)"}
-                    </Text>
+                  <TouchableOpacity style={[styles.chip, active && styles.chipActive]} onPress={() => onSelectGroup(item.id)}>
+                    <Text style={[styles.chipText, active && styles.chipTextActive]}>{item.name ?? "(Untitled group)"}</Text>
                   </TouchableOpacity>
                 );
               }}
@@ -276,20 +363,11 @@ export default function OrganizeIndexScreen() {
 
           <View style={{ height: 12 }} />
 
-          <Text style={styles.label}>
-            Title (optional — server fills if blank)
-          </Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. Math 101 — Quiz 2"
-            value={title}
-            onChangeText={setTitle}
-          />
+          <Text style={styles.label}>Title (optional — server fills if blank)</Text>
+          <TextInput style={styles.input} placeholder="e.g. Math 101 — Quiz 2" value={title} onChangeText={setTitle} />
 
           <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>
-              Start (UTC ISO)
-            </Text>
+            <Text style={[styles.label, styles.rowLabel]}>Start (UTC ISO)</Text>
             <TouchableOpacity style={styles.btnSmall} onPress={useLocalNow}>
               <Text style={styles.btnSmallText}>Use local now</Text>
             </TouchableOpacity>
@@ -314,13 +392,8 @@ export default function OrganizeIndexScreen() {
           />
 
           <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>
-              Venue lat / lng
-            </Text>
-            <TouchableOpacity
-              style={styles.btnSmall}
-              onPress={useCurrentLocation}
-            >
+            <Text style={[styles.label, styles.rowLabel]}>Venue lat / lng</Text>
+            <TouchableOpacity style={styles.btnSmall} onPress={useCurrentLocation}>
               <Text style={styles.btnSmallText}>Use current location</Text>
             </TouchableOpacity>
           </View>
@@ -343,66 +416,66 @@ export default function OrganizeIndexScreen() {
           </View>
 
           <Text style={styles.label}>Venue name (optional)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. Main gate"
-            value={locationName}
-            onChangeText={setLocationName}
-          />
+          <TextInput style={styles.input} placeholder="e.g. Main gate" value={locationName} onChangeText={setLocationName} />
 
           <View style={styles.row}>
             <View style={{ flex: 1, marginRight: 8 }}>
               <Text style={styles.label}>Radius (m)</Text>
-              <TextInput
-                style={styles.inputMono}
-                placeholder="50"
-                value={radiusM}
-                onChangeText={setRadiusM}
-                keyboardType="numeric"
-              />
+              <TextInput style={styles.inputMono} placeholder="50" value={radiusM} onChangeText={setRadiusM} keyboardType="numeric" />
             </View>
             <View style={{ flex: 1, marginLeft: 8 }}>
               <Text style={styles.label}>Window ± (min)</Text>
-              <TextInput
-                style={styles.inputMono}
-                placeholder="30"
-                value={windowMinutes}
-                onChangeText={setWindowMinutes}
-                keyboardType="numeric"
-              />
+              <TextInput style={styles.inputMono} placeholder="30" value={windowMinutes} onChangeText={setWindowMinutes} keyboardType="numeric" />
             </View>
           </View>
 
           <View style={{ height: 12 }} />
-          <TouchableOpacity
-            disabled={!canSubmit || submitting}
-            style={[
-              styles.btn,
-              (!canSubmit || submitting) && styles.btnDisabled,
-            ]}
-            onPress={onCreate}
-          >
-            <Text style={styles.btnText}>
-              {submitting ? "Creating..." : "Create"}
-            </Text>
+          <TouchableOpacity disabled={!canSubmit || submitting} style={[styles.btn, (!canSubmit || submitting) && styles.btnDisabled]} onPress={onCreate}>
+            <Text style={styles.btnText}>{submitting ? "Creating..." : "Create"}</Text>
           </TouchableOpacity>
-          <Text style={styles.helpSmall}>
-            You can type UTC ISO strings and lat/lng manually, or use the
-            quick-fill buttons.
-          </Text>
+          <Text style={styles.helpSmall}>You can type UTC ISO strings and lat/lng manually, or use the quick-fill buttons.</Text>
         </View>
       ) : null}
 
       <View style={styles.card}>
         <Text style={styles.cardTitle}>Recent events</Text>
+
+        {showRecentGroupChips ? (
+          <>
+            {groups.length === 0 ? (
+              <Text style={styles.help}>No groups yet. Join a group to see events.</Text>
+            ) : (
+              <>
+                <Text style={[styles.label, { marginBottom: 6 }]}>Group</Text>
+                <FlatList
+                  data={groups}
+                  keyExtractor={(g) => g.id}
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ gap: 8 }}
+                  renderItem={({ item }) => {
+                    const active = groupId === item.id;
+                    return (
+                      <TouchableOpacity style={[styles.chip, active && styles.chipActive]} onPress={() => onSelectGroup(item.id)}>
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{item.name ?? "(Untitled group)"}</Text>
+                      </TouchableOpacity>
+                    );
+                  }}
+                />
+                <View style={{ height: 12 }} />
+              </>
+            )}
+          </>
+        ) : null}
+
+        {groupId ? null : <Text style={styles.help}>Select a group to see events.</Text>}
+
         {events.length === 0 ? (
           <Text style={styles.help}>No events yet.</Text>
         ) : (
           events.map((e) => (
             <View key={e.id} style={styles.eventItem}>
-              <Text style={styles.eventTitle}>
-                {e.title ?? "(Untitled event)"}
-              </Text>
+              <Text style={styles.eventTitle}>{e.title ?? "(Untitled event)"}</Text>
               <Text style={styles.meta}>
                 {e.start_utc ?? "—"} — {e.end_utc ?? "—"}
               </Text>
@@ -429,9 +502,7 @@ export default function OrganizeIndexScreen() {
                       onPress={() =>
                         Linking.openURL(
                           `https://maps.google.com/?q=${encodeURIComponent(
-                            e.location_name
-                              ? `${e.location_name} @ ${e.lat},${e.lng}`
-                              : `${e.lat},${e.lng}`
+                            e.location_name ? `${e.location_name} @ ${e.lat},${e.lng}` : `${e.lat},${e.lng}`
                           )}`
                         )
                       }
@@ -443,19 +514,11 @@ export default function OrganizeIndexScreen() {
               ) : null}
 
               <View style={{ flexDirection: "row", gap: 8, marginTop: 8 }}>
-                <TouchableOpacity
-                  style={[styles.btn, { paddingVertical: 10 }]}
-                  onPress={() => router.push(`/organize/events/${e.id}`)}
-                >
+                <TouchableOpacity style={[styles.btn, { paddingVertical: 10 }]} onPress={() => router.push(`/organize/events/${e.id}`)}>
                   <Text style={styles.btnText}>OPEN DETAIL</Text>
                 </TouchableOpacity>
                 {role === "organizer" ? (
-                  <TouchableOpacity
-                    style={[styles.btn, { paddingVertical: 10 }]}
-                    onPress={() =>
-                      router.push(`/organize/events/${e.id}/live`)
-                    }
-                  >
+                  <TouchableOpacity style={[styles.btn, { paddingVertical: 10 }]} onPress={() => router.push(`/organize/events/${e.id}/live`)}>
                     <Text style={styles.btnText}>LIVE (ORGANIZER)</Text>
                   </TouchableOpacity>
                 ) : null}
@@ -464,6 +527,27 @@ export default function OrganizeIndexScreen() {
           ))
         )}
       </View>
+
+      <Modal visible={manageOpen} transparent animationType="fade" onRequestClose={closeManageGroups}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Manage Groups</Text>
+            <Text style={styles.modalBody}>Create a group to get an invite code, then come back here and pull down to refresh.</Text>
+
+            <View style={{ height: 12 }} />
+
+            <TouchableOpacity style={styles.modalPrimaryBtn} onPress={openMyGroups}>
+              <Text style={styles.modalPrimaryBtnText}>OPEN MY GROUPS</Text>
+            </TouchableOpacity>
+
+            <View style={{ height: 10 }} />
+
+            <TouchableOpacity style={styles.modalSecondaryBtn} onPress={closeManageGroups}>
+              <Text style={styles.modalSecondaryBtnText}>CLOSE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
@@ -567,4 +651,41 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     overflow: "hidden",
   },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+  },
+  modalCard: {
+    width: "100%",
+    maxWidth: 520,
+    borderRadius: 14,
+    backgroundColor: "white",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 14,
+  },
+  modalTitle: { fontSize: 18, fontWeight: "800", marginBottom: 6, color: "#111827" },
+  modalBody: { color: "#6B7280", lineHeight: 18 },
+
+  modalPrimaryBtn: {
+    backgroundColor: "#111827",
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+  modalPrimaryBtnText: { color: "white", fontWeight: "800" },
+
+  modalSecondaryBtn: {
+    backgroundColor: "#F3F4F6",
+    paddingVertical: 12,
+    borderRadius: 10,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  modalSecondaryBtnText: { color: "#111827", fontWeight: "800" },
 });
