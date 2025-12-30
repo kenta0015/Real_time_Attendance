@@ -729,197 +729,63 @@ Ken 向けの現実的な選択肢：
 
 ## unmatched root について
 
-1. 最初の症状（2 つあった）
-   (1) ロールが反映されない問題
+今回の 「新規登録後に Unmatched Route」 問題は、こう整理できます。
 
-条件：Expo Go の「ストレージ削除 / Clear storage」後に起動
+1. 症状
 
-フロー：
+新規ユーザーで /join → サインイン → user_profile が無いので /register へ
 
-/index → セッションなしなので /join へ
+/register でプロフィール保存（名前・role）を押した直後に
+黒背景の “Unmatched Route / Page could not be found” が出る
 
-/join で Organizer ユーザーとして Sign In
+画面下の Sitemap を押すと、環境によっては 真っ黒になることがあった（原因特定に使えない）
 
-そのままタブ画面に遷移するが、UI は Attendee 用になる
+2. 決定的な証拠（ログ）
 
-DB 上では user_profile.role = "organizer" なのに、UI は attendee 扱いになっていた。
+あなたが取ったログで、以下が出ていた：
 
-原因
+[register] saved -> /(tabs) with role = attendee
 
-/join でログイン成功後、user_profile を読まずに 直接タブへ遷移していた。
+→ 保存後の遷移先が /(tabs) になっていることが確定。
 
-useDevRoleStore.setServerRole() が一度も呼ばれず、serverRole が null のまま。
+3. 根本原因（Root Cause）
 
-useEffectiveRole() は
-ENABLE_DEV = false のため serverRole ?? "attendee" → "attendee" を返す。
+Expo Router の **(tabs) は「グループ名」**で、実在する URL ルートではない
 
-(2) Unmatched Route 画面
+つまり router.replace("/(tabs)") は “存在しない画面” へ遷移しようとしてしまい、結果として Unmatched Route になる
 
-フロー：アプリ起動 → /join でログイン → Sign In ボタンを押した直後 に
-黒背景の 「Unmatched Route / Page could not be found」 が表示される。
+以前あなたが直した「`index.tsx で /(tabs) に飛ぶとダメ」問題と同種のバグが、今回は register 側に残っていた。
 
-Sitemap 画面を見ると、ルート一覧には
+4. 修正方針
 
-index.tsx（/）
+保存後の遷移を /(tabs) のようなグループ名にせず、実在するルートへ変更
 
-(tabs)/\_layout.tsx
+さらに安全な設計として、ログイン/初期化/ロール反映の責務を /index に一元化する（あなたの join 修正と同じ思想）
 
-events/[id].tsx（/events/[id]）
+5. 実際の修正内容
 
-register.tsx（/register）
+app/register.tsx の保存後遷移を
 
-などが見える。
+router.replace("/(tabs)") ❌
 
-ログには：
+router.replace("/") ✅（= /index に戻す）
+に変更
 
-[index] user_profile found. role = ...
-[index] redirect -> /(tabs) with role = ...
+6. なぜ Sitemap が黒くなった？
 
-の後に Unmatched Route が出ていた。
+Sitemap が黒くなるのは 環境差・デバッグ UI の表示不具合の可能性が高い
 
-2. ロール問題に対して行ったこと（join.tsx）
-   変更前
+だから今回は Sitemap ではなくログで原因確定したのが正解ルート
 
-join.tsx のログイン後の遷移先：
+7. 再発防止ミニチェック
 
-定数：AFTER_LOGIN_PATH = "/(tabs)/events";
+router.replace("/(tabs)") / "/(auth)" など グループ名だけに飛ばない
 
-Sign In 成功後：
+遷移先は必ず Sitemap に載る“実在する画面”（例：/events や /organize/...）か、/（index 一元化）にする
 
-if (!tokenInUrl) {
-router.replace(AFTER_LOGIN_PATH);
-}
+Unmatched が出たらまず **「直前の router.replace の行き先ログ」**で確定する
 
-sessionUserId を監視する auto-nav でも同じく router.replace(AFTER_LOGIN_PATH)。
-
-→ /index を通らないため、user_profile を読んで serverRole をセットする処理が一度も走らない。
-
-変更内容
-
-方針：ログイン後のルート初期化は /index に一元化する。
-
-AFTER_LOGIN_PATH を "/" に変更。
-
-Sign In 成功後も、sessionUserId を検知した auto-nav も、すべて router.replace("/") に変更。
-
-これで：
-
-/join でログイン成功
-
-いったん /（app/index.tsx）へ移動
-
-/index が Supabase から user_profile を取得し、setServerRole() を呼ぶ
-
-その後、タブへ遷移
-
-という流れになり、ロールの初期化処理が必ず実行されるようになった。
-
-結果
-
-Organizer ユーザー・Attendee ユーザーの両方で、
-
-Clear storage → 起動 → /join → Sign In
-
-期待どおり Organizer UI / Attendee UI が表示されることを確認。
-
-3. Unmatched Route 問題に対して行ったこと（index.tsx）
-   原因
-
-app/index.tsx の最後の遷移がこうなっていた：
-
-console.info("[index] redirect -> /(tabs) with role =", effectiveRole);
-router.replace("/(tabs)");
-
-/ (tabs) は expo-router の「グループ名」であり、実際の画面ではない。
-
-Expo Router 的には「/(tabs) というパスに対応するスクリーンが存在しない」状態。
-
-その結果：
-
-目的の画面にマッチせず
-
-NotFound 用のパス /--/ にフォールバック
-
-黒い Unmatched Route 画面が表示されていた。
-
-※ Sitemap に /events などは出ていたが、「ルートが / (tabs) だけ」のスクリーンは存在していなかった。
-
-変更内容
-
-行き先を「実在する画面」に変更：
-
-router.replace("/(tabs)") → router.replace("/(tabs)/events") に変更。
-
-/ (tabs)/events は、app/(tabs)/events.tsx に対応する実際の画面。
-
-expo-router では /events でも / (tabs)/events でも OK だが、少なくとも「スクリーン付きのパス」になる。
-
-結果
-
-Sign In 後の Unmatched Route 画面は消え、
-
-ログでも
-redirect -> /(tabs)/events with role = ... の後、正常に TabLayout と EventsList が描画されるようになった。
-
-4. まだ残っている WARN とその意味
-   (1) expo-notifications の WARN / ERROR
-   WARN `expo-notifications` functionality is not fully supported in Expo Go
-   ERROR expo-notifications: Android Push notifications ... was removed from Expo Go with SDK 53.
-
-内容：
-
-Expo Go では リモート Push 通知 がサポートされなくなった。
-
-Push をちゃんと使いたい場合は Dev Client（development build）を使ってね という案内。
-
-影響：
-
-位置情報や出欠機能、タブ UI、ロール切り替えには影響なし。
-
-Push 機能だけが Expo Go 上では動かない。
-
-対処タイミング：
-
-本当に Push を実装・テストする段階で、
-
-eas build --profile development --platform android
-
-Dev Client で起動
-
-その時点でこの WARN/ERROR は消える想定。
-
-現状：
-
-無視して OK （ログがうるさいだけの存在）。
-
-(2) [Layout children] の WARN
-WARN [Layout children]: No route named "organize/admin/[eventId]/live" exists in nested children: [...]
-
-内容：
-
-旧ルート organize/admin/[eventId]/live 向けに残しているレガシー画面（リダイレクト用）と
-
-タブの children 一覧との整合性チェックで、「この名前のルートが children に見当たらない」と警告している。
-
-影響：
-
-実際に使っているのは /organize/events/[id]/live 側。
-
-現在の UI / 機能には影響なし。
-
-将来やるなら：
-
-完全に整理したくなったタイミングで、
-
-Tabs.Screen name="organize/admin/[eventId]/live" を削除するか、
-
-レガシーファイル app/(tabs)/organize/admin/[eventId]/live.tsx を整理する。
-
-現状：
-
-致命ではなく、技術的負債寄りの WARN。急ぎではない。
-
-5. 将来同じような問題が起きたときのミニチェックリスト
+### Root のミスマッチに関して将来同じような問題が起きたときのミニチェックリスト
 
 まず Sitemap を見る
 
@@ -1065,53 +931,70 @@ Start attendee check → 説明画面 → Cancel
 
 一度 Continue していれば、次からは Start attendee check 押下 → いきなり ensurePermissions() → geofence ON になることを確認
 
-# フェーズ B：本番用ビルド & Play Console 差し替え
+# フェーズ B：本番用ビルド & Play Console 差し替え. 完了 ☑️
 
-## B-1. 本番用 AAB を作成
-
-コマンド：
+## B-1. 本番用 AAB v4 を作成（済）
 
 eas build --platform android --profile production
 
-期待値：
+versionName: 1.0.0
 
-versionName: 1.0.0 のまま
-
-versionCode: 4（remote + autoIncrement で自動的に 3 → 4）
+versionCode: 4
 
 ## B-2. Play Console にアップロード
 
-内部テストトラック（v1-internal）
+① 内部テストトラック（v1-internal） → 完了
 
 既存の 1.0.0 (3) リリースをベースに新しいリリースを作成
 
-AAB を v4 に差し替え
+AAB を v4（versionCode 4）に差し替え
 
-クローズドテストトラック（12testers）
+リリース名: 1.0.0 (4) internal
+
+問題なしで「保存して公開」まで完了
+
+② クローズドテストトラック（12testers） → 動画 URL がないと完了不可
 
 同じ AAB v4 を使ってリリース 4 を作成
 
-既存の versionCode 3 は「過去バージョン」として残るだけで OK
+リリース名: 1.0.0 (4)
 
-✅ この時点で、「Start attendee check + 説明画面」つきの AAB v4 が内部テスト & クローズドテスト両方で使える状態になる。
+ここで Play Console から以下のエラーが出る：
 
-# フェーズ C：審査用の動画作成 & フォーム記入
+プライバシーポリシー URL
 
-## C-1. Pixel に v4 をインストール
+アカウント削除ページ URL
 
-内部テスト or クローズドテスト経由で、Play Store から v4 をインストール
+位置情報の利用許可フォーム（動画 URL を含む）
 
-アプリ内バージョンが versionCode 4 になっていることを確認
+⚠ 重要：この「位置情報の利用許可」フォームで
+「動画での手順の説明」欄に有効な URL を入れないと、
+クローズドテストのリリースを保存できない。
+→ 動画 URL は絶対にスキップ不可。
+
+そのため、実際の作業順序は：
+
+フェーズ C で動画を作って YouTube URL を用意 ➜ その URL を位置情報フォームに入れてから、B-2 クローズドテストリリースを完了
+
+# フェーズ C：審査用の動画作成 & フォーム記入　完了 ☑️
+
+（※ここが B-2 クローズドテスト完了の必須条件）
+
+## C-1. Pixel に v5 をインストール
+
+内部テストトラックから Play Store 経由で v5 をインストール
+
+アプリ内で versionCode 5 になっていることを確認
 
 ## C-2. 画面録画（30〜40 秒）
 
-録画シナリオ（決め打ち）：
+シナリオ（英語 UI 前提）：
 
 GeoAttendance を起動
 
 Organizer としてログイン（必要なら）
 
-該当イベントの Live 画面を開く
+対象イベントの Live 画面を開く
 
 Start attendee check をタップ
 
@@ -1119,33 +1002,50 @@ Start attendee check をタップ
 
 Continue を押す
 
-OS の Location 許可ダイアログ（Allow all the time を選択）
+OS の Location 許可ダイアログで Allow all the time を選択
 
 Live 画面へ戻る
 
-再度 Start attendee check を押して、チェックが開始されたことがわかる状態を少し映す
-（ステータス表示 or ボタン状態など）
+もう一度 Start attendee check を押して、チェックが開始された状態を数秒映す
 
-→ ここまで録画したら停止
+録画停止
 
 ## C-3. YouTube にアップ & Play 側に登録
+
+（ここが 動画 URL 必須ポイント）
 
 録画動画を PC にコピー
 
 YouTube に「限定公開」でアップロード
 
-URL をコピー
+動画の URL をコピー
 
-Play Console → 位置情報の利用許可フォーム
-「動画での手順の説明」欄に URL を貼り付けて保存
+Play Console → アプリのコンテンツ → 位置情報の利用許可
 
-# フェーズ D：クローズドテスト公開 & 12testers 実行
+すでに入力した説明テキスト（目的 / 背景アクセス理由）を確認
+
+「動画での手順の説明」欄に YouTube の URL を必ず入力
+
+保存
+
+ここまで終わると、「位置情報の利用許可」フォームのエラーが消え、
+B-2 のクローズドテストリリースを保存できる状態になる。
+
+# フェーズ D：クローズドテスト公開 & 12testers 実行　　完了 ☑️
 
 ## D-1. クローズドテストトラックを公開
 
-デベロッパーコンソールで、クローズドトラック（12testers 用）のリリース 4 (versionCode 4) がエラーなしになっていることを確認
+クローズドトラック（12testers）のリリース 5(versionCode 5) を開く
 
-「公開」ボタンを押して、クローズドテストを有効化
+エラーが無いことを確認
+
+プライバシーポリシー URL: GitHub Pages の新 URL
+
+アカウント削除ページ URL: 同じく有効
+
+位置情報の利用許可フォーム: テキスト + 動画 URL 済
+
+「保存して公開」を押して、クローズドテストを有効化
 
 ## D-2. 12testers 側の手配
 
@@ -1158,9 +1058,86 @@ Play Console → 位置情報の利用許可フォーム
 対象国：オーストラリア等（既に 177 カ国設定済み）
 
 14 日間テストしてもらい、Play の条件
-（インストール人数 / 利用日数 / アクティブ数）を満たす
 
-# フェーズ E：本番トラックへの昇格
+インストール人数 / 利用日数 / アクティブ数
+を満たす
+
+##　 test 期間中の動き
+
+1. どんなフィードバックが来るのか
+
+Testers Community 側では、テスターが実機で触った結果をまとめてくれます。内容イメージは：
+
+クラッシュ / フリーズなどの致命的バグ
+
+画面遷移や文言の使い勝手の指摘
+
+どの端末・OS バージョンで試したかといった環境情報
+
+必要に応じてスクリーンショット
+
+これらはテスト期間中に少しずつ溜まっていき、テスト終了時にまとまったレポートが見られる、という流れになります。
+
+2. どれくらいの頻度で見ればいい？
+
+おすすめは：
+
+1 日 1 回だけ Dashboard を開く
+
+画面下の GeoAttendance カードの「View Details」をクリック
+
+新しいレポートや Issue が増えていないかを見る
+
+忙しい日は 2〜3 日に 1 回 でも OK
+
+いずれにせよ、大量にリアルタイム更新されるものではないので、張り付く必要はないです。
+
+メール通知が来ることも多いので、
+Testers Community からのメールだけは見逃さないようにしておけば安心です。
+
+3. フィードバックが来たときの対処の仕方（おすすめの動き）
+
+内容をざっと分類する
+
+A：クラッシュ・フリーズ・ログイン不能などの致命的バグ
+
+B：位置情報の挙動がおかしい、Start attendee check が動かない などの重要バグ
+
+C：UI/UX や文言など、直せたら嬉しいけど後回しでも OK な改善点
+
+A/B はできるだけテスト期間中に再現＆修正を検討
+
+自分の Pixel で同じ手順を試して再現する
+
+原因がはっきりして、修正が小さく済みそうなら
+→ v6 などの新ビルドを作ってクローズドテストに差し替え
+（今までと同じ手順で AAB をアップすれば、テスターは自動で新バージョンにアップデートされます）
+
+逆に、根が深そうなバグや大きな仕様変更になりそうなら
+→ 「既知の問題」としてメモしておき、本番公開後のアップデート候補に回す
+
+C（改善系）はメモに回す
+
+Notion や GitHub Issues、簡単なメモでもいいので
+「本番公開後にやる改善リスト」として溜めておく
+
+今のフェーズの最優先は クラッシュなく安定して動くこと なので、欲張りすぎないのが大事
+
+4. いま Ken がやることのまとめ
+
+✅ Testers Community の Dashboard に GeoAttendance が「In testing」で出ているのを確認できている → OK
+
+📆 毎日〜2 日に 1 回くらい Dashboard の「View Details」を開いて、新しいフィードバックがないかだけ確認
+
+🐞 もし致命的バグ報告が来たら：
+
+ローカルで再現
+
+修正 → v6 ビルド → クローズドテストに差し替え
+
+必要なら Testers Community のサポートに「重大バグ修正版をアップした」旨を一言送る
+
+## フェーズ E：本番トラックへの昇格
 
 12testers のレポートを確認
 
@@ -1170,8 +1147,139 @@ Play Console → 位置情報の利用許可フォーム
 
 問題なければ：
 
-同じ AAB v4 を「製品版トラック」に昇格
+同じ AAB v5 を「製品版トラック」に昇格
 
 必要であればストアの説明文・スクリーンショット・アイコンを最終調整
 
 「公開」を押して、正式リリース
+
+### バックアップ
+
+バックアップまとめ（現状の確定情報）
+
+1. RLS / Policies 状態（重要）
+
+public.events
+
+RLS：Enabled（画面右上が “Disable RLS”）
+
+Policy：1 つ
+
+events_read_all
+
+Command：SELECT
+
+Applied to：public
+
+USING：true（＝全ユーザーに読み取り許可）
+
+public.groups
+
+RLS：Disabled
+
+Policies：なし（No policies created yet）
+
+public.group_members
+
+RLS：Disabled
+
+Policies：なし（No policies created yet）
+
+2. テーブル DDL（保存済み）
+
+public.groups
+
+create table public.groups (
+id uuid not null default gen_random_uuid (),
+name text not null,
+description text null,
+created_by uuid not null,
+created_at timestamp with time zone not null default now(),
+constraint groups_pkey primary key (id)
+) TABLESPACE pg_default;
+
+public.events（あなたが貼ってくれた定義）
+
+group_id uuid not null（FK → groups(id) on delete cascade）
+
+created_by uuid not null
+
+他：title / start_utc / end_utc / lat/lng etc.
+
+public.group_members（あなたが貼ってくれた定義）
+
+PK：(group_id, user_id)（両方 uuid）
+
+role：organizer | member
+
+FK：group_id -> groups(id) on delete cascade
+
+3. 現状の問題に直結する確定点（原因メモ）
+
+events は “誰でも SELECT できる” policy がある（USING true）
+
+groups / group_members は RLS disabled のため、アプリが select() を投げると基本的に通る（匿名キーを持つクライアントで読める状態）
+
+4. 保存物（あなたの手元に残っているべきもの）
+
+Policies 画面のスクショ：
+
+groups（RLS disabled / no policies）
+
+group_members（RLS disabled / no policies）
+
+events（events_read_all の編集画面：USING true）
+
+events（policy 一覧：events_read_all）
+
+DDL テキスト：
+
+groups / events / group_members
+
+ここまでが「バックアップまとめ」です。
+
+## iphone でアプリ起動
+
+これからの基本ルーティン
+
+Metro 起動（まずはこれだけで OK）
+
+cd "/Users/ken/app_development/rta-zero_restored"
+npx expo start --dev-client --clear
+
+iPhone で GeoAttendanceTest を開く
+→ 自動で Metro に繋がって更新される
+
+いつ Xcode の Run が必要？
+
+ふだんの JS/TS 変更だけ → 不要（Metro + アプリ起動で OK）
+
+次のどれかをやった時 → Xcode で Run（ビルドし直し）
+
+expo prebuild や pod install が絡む変更
+
+app.json / app.config のネイティブ設定が変わった
+
+ネイティブ依存（カメラ/位置/通知/permissions 系やライブラリ追加）を入れ替えた
+
+ios/ を消して作り直した・Pods が変わった
+
+いま出てた「No script URL provided」再発防止
+
+Metro が起動してない or 違うプロジェクトで起動してると出ることが多い
+
+迷ったらこの順番が安定：
+
+npx expo start --dev-client --clear
+
+iPhone で GeoAttendanceTest 起動
+
+この状態で、次に困りがちなのは「同じ Wi-Fi じゃなくて繋がらない」「PC の IP が変わって繋がらない」あたり。もしまた接続で止まったら、その画面（Dev Client の接続先表示）スクショ投げて。
+
+##　 Play console へアップデートするときは下記が正解
+
+npx eas build -p android --profile internal
+
+必要なら履歴も見れる
+
+npx eas build:list --platform android --limit 10

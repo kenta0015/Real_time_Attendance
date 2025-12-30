@@ -388,7 +388,7 @@ EAS Secrets：EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY 登録済
 
 ---
 
-## Cross-cutting: Privacy, Consent, Localization, Accessibility
+## Cross-cutting: , Consent, Localization, Accessibility
 
 - Consent copy must state purpose, 30-day retention, visibility scope, and “not payroll-official”.
 - Localization: recap images EN; app strings can be EN/JA later (start with EN).

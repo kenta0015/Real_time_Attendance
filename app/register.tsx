@@ -168,8 +168,10 @@ export default function RegisterScreen() {
 
       // Update global role (source of truth = Supabase, but we mirror it locally)
       setServerRole(selectedRole);
-      console.info("[register] saved -> /(tabs) with role =", selectedRole);
-      router.replace("/(tabs)");
+
+      // Centralize post-auth routing in /index.
+      console.info("[register] saved -> / with role =", selectedRole);
+      router.replace("/");
     } catch (e) {
       console.warn("[register] save fatal error:", String(e));
       Alert.alert(
