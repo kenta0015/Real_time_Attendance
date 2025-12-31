@@ -10,7 +10,7 @@ GeoAttend is a lightweight attendance app for small teams and clubs. It combines
 - **QR fallback:** faster on-site flow + backup when GPS is inaccurate
 - **Secure backend:** Supabase Auth + RLS to restrict data access by membership
 
-![GeoAttend — organizer view](screenshots/checkin-list.png)
+![GeoAttend — organizer view](screenshots/01-checkin-list.png)
 
 ✅ Available on Google Play (AU/NZ)
 
@@ -46,9 +46,9 @@ If you’re reviewing this repo for a job application, here’s the fastest path
 **Evidence & docs (start here):**
 
 - **Google Play (AU/NZ)** build: https://play.google.com/store/apps/details?id=com.kenta0015.geoattendance.internal
-- **Reliability validation (test plan + raw results):** `[docs/validation.md](docs/validation.md)`
-- **Backend notes (schema + key RLS policies):** `[docs/backend.md](docs/backend.md)`
-- Screenshots (quick UI context): `[screenshots/](screenshots/)`
+- **Reliability validation (test plan + raw results):** [docs/validation.md](docs/validation.md)
+- **Backend notes (schema + key RLS policies):** [docs/backend.md](docs/backend.md)
+- Screenshots (quick UI context): [screenshots/](screenshots/)
 
 **Reliability validation (controlled tests):**
 
