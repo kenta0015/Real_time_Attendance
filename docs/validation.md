@@ -43,7 +43,7 @@ This page explains how GeoAttend was validated in realistic GPS/geofence scenari
 
 A pilot checklist exists in:
 
-- `docs/validation_metrics.xlsx` (exported from the original Numbers sheet)
+- [docs/validation_metrics.xlsx](docs/validation_metrics.xlsx]) (exported from the original Numbers sheet)
 
 The backend also provides validation-friendly views:
 
