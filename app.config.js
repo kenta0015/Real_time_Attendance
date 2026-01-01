@@ -43,6 +43,7 @@ export default ({ config }) => {
             "Allow GeoAttendance to access your microphone when recording audio is required for app features.",
         },
       ],
+      "@react-native-community/datetimepicker",
       "expo-notifications",
       "expo-mail-composer",
     ],
