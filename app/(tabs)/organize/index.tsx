@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -46,6 +46,11 @@ type PlaceCandidate = {
   lat: number;
   lng: number;
 };
+
+type FieldKey = "group" | "title" | "start" | "end" | "address" | "coords" | "radius" | "window";
+type FormErrors = Partial<Record<FieldKey, string>>;
+
+const FIELD_ORDER: FieldKey[] = ["group", "title", "start", "end", "address", "coords", "radius", "window"];
 
 const DEFAULT_DURATION_MINUTES = 60;
 
@@ -133,20 +138,14 @@ function buildGoogleMapsSearchUrl(query: string): string {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 }
 
-function buildGoogleMapsCoordsUrl(lat: string, lng: string): string | null {
-  const latN = Number(lat);
-  const lngN = Number(lng);
-  if (!Number.isFinite(latN) || !Number.isFinite(lngN)) return null;
-  if (!isValidLatLngRange(latN, lngN)) return null;
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${latN},${lngN}`)}`;
-}
-
 export default function OrganizeIndexScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ gid?: string }>();
   const passedGid = typeof params.gid === "string" ? params.gid : undefined;
 
   const role: Role = useEffectiveRole();
+
+  const scrollRef = useRef<ScrollView | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -166,6 +165,16 @@ export default function OrganizeIndexScreen() {
   const [radiusM, setRadiusM] = useState<string>("50");
   const [windowMin, setWindowMin] = useState<string>("30");
   const [submitting, setSubmitting] = useState(false);
+
+  // validation UI (run only on Create)
+  const [formErrors, setFormErrors] = useState<FormErrors>({});
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const [createCardY, setCreateCardY] = useState(0);
+  const [fieldY, setFieldY] = useState<Partial<Record<FieldKey, number>>>({});
+
+  // Address -> Coords helper
+  const [addrGeocoding, setAddrGeocoding] = useState(false);
 
   // location search (kept as optional helper; may be inaccurate depending on device/provider)
   const [placeQuery, setPlaceQuery] = useState<string>("");
@@ -188,6 +197,59 @@ export default function OrganizeIndexScreen() {
     if (Platform.OS === "android") ToastAndroid.show(msg, ToastAndroid.SHORT);
     else Alert.alert("Info", msg);
   };
+
+  const clearFieldError = useCallback((key: FieldKey) => {
+    setFormErrors((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
+  const registerFieldY = useCallback((key: FieldKey) => {
+    return (e: any) => {
+      const y = e?.nativeEvent?.layout?.y;
+      if (typeof y !== "number") return;
+      setFieldY((prev) => (prev[key] === y ? prev : { ...prev, [key]: y }));
+    };
+  }, []);
+
+  const scrollToField = useCallback(
+    (key: FieldKey) => {
+      const within = fieldY[key];
+      if (typeof within !== "number") return;
+      const y = Math.max(0, createCardY + within - 12);
+      scrollRef.current?.scrollTo({ y, animated: true });
+    },
+    [createCardY, fieldY]
+  );
+
+  const setErrorsAndScroll = useCallback(
+    (errs: FormErrors) => {
+      setFormErrors(errs);
+      const first = FIELD_ORDER.find((k) => !!errs[k]);
+      if (first) scrollToField(first);
+    },
+    [scrollToField]
+  );
+
+  const setFieldErrorAndScroll = useCallback(
+    (key: FieldKey, msg: string) => {
+      setFormErrors((prev) => ({ ...prev, [key]: msg }));
+      scrollToField(key);
+    },
+    [scrollToField]
+  );
+
+  const renderFieldError = useCallback(
+    (key: FieldKey) => {
+      const msg = formErrors[key];
+      if (!msg) return null;
+      return <Text style={styles.inlineErrorText}>{msg}</Text>;
+    },
+    [formErrors]
+  );
 
   const formatLocalDateTime = (isoUtc: string): string | null => {
     if (!isoUtc) return null;
@@ -321,26 +383,6 @@ export default function OrganizeIndexScreen() {
     setStartUtc(startLocal.toISOString());
     setEndUtc(endLocal.toISOString());
     notify("Filled start/end from local now (stored as UTC ISO).");
-  }, []);
-
-  const useCurrentLocation = useCallback(async () => {
-    try {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert("Permission needed", "Location permission is required to use current location.");
-        return;
-      }
-      const loc = await Location.getCurrentPositionAsync({});
-      setLat(String(loc.coords.latitude));
-      setLng(String(loc.coords.longitude));
-      setPlaceError(null);
-      setPlaceSearched(false);
-      setPlaceSearching(false);
-      setPlaceResults([]);
-      notify("Filled lat/lng from current location.");
-    } catch (e: any) {
-      Alert.alert("Location error", e?.message ?? "Failed to get current location");
-    }
   }, []);
 
   const runPlaceSearchForward = useCallback(async () => {
@@ -503,11 +545,14 @@ export default function OrganizeIndexScreen() {
 
       setLat(String(p.lat));
       setLng(String(p.lng));
+      if (formErrors.coords) clearFieldError("coords");
+      setSubmitError(null);
+
       if (!locationName.trim()) setLocationName(p.title);
       setPlaceError(null);
       notify("Coordinates set from quick search. Please paste the full address from Google Maps into Venue address.");
     },
-    [locationName]
+    [clearFieldError, formErrors.coords, locationName]
   );
 
   const openManageGroups = useCallback(() => setManageOpen(true), []);
@@ -550,9 +595,14 @@ export default function OrganizeIndexScreen() {
 
     setStartUtc(tempStartLocal.toISOString());
     setEndUtc(endLocal.toISOString());
+
+    if (formErrors.start) clearFieldError("start");
+    if (formErrors.end) clearFieldError("end");
+    setSubmitError(null);
+
     notify("Start updated (End auto-set to +60 minutes).");
     closeStartPicker();
-  }, [closeStartPicker, tempStartLocal]);
+  }, [clearFieldError, closeStartPicker, formErrors.end, formErrors.start, tempStartLocal]);
 
   const openStartPickerAndroid = useCallback(() => {
     const initial = safeParseIso(startUtc);
@@ -586,12 +636,17 @@ export default function OrganizeIndexScreen() {
 
             setStartUtc(finalLocal.toISOString());
             setEndUtc(endLocal.toISOString());
+
+            if (formErrors.start) clearFieldError("start");
+            if (formErrors.end) clearFieldError("end");
+            setSubmitError(null);
+
             notify("Start updated (End auto-set to +60 minutes).");
           },
         });
       },
     });
-  }, [startUtc]);
+  }, [clearFieldError, formErrors.end, formErrors.start, startUtc]);
 
   const openStartPicker = useCallback(() => {
     if (Platform.OS === "android") openStartPickerAndroid();
@@ -616,87 +671,129 @@ export default function OrganizeIndexScreen() {
     [openWebUrl]
   );
 
-  const openGoogleMapsForCoords = useCallback(async () => {
-    const url = buildGoogleMapsCoordsUrl(lat, lng);
-    if (!url) {
-      Alert.alert("Missing coordinates", "Set lat/lng first (Use current location or Advanced lat/lng).");
+  const setCoordsFromAddress = useCallback(async () => {
+    setSubmitError(null);
+
+    const addr = locationName.trim();
+    if (!addr) {
+      setFieldErrorAndScroll("address", "Venue address is required to set coordinates.");
       return;
     }
-    await openWebUrl(url);
-  }, [lat, lng, openWebUrl]);
+
+    setAddrGeocoding(true);
+    try {
+      const raw = await Location.geocodeAsync(addr);
+      const first = raw?.[0];
+
+      const latN = first ? Number((first as any).latitude) : NaN;
+      const lngN = first ? Number((first as any).longitude) : NaN;
+
+      if (!Number.isFinite(latN) || !Number.isFinite(lngN) || !isValidLatLngRange(latN, lngN)) {
+        setFormErrors((prev) => ({
+          ...prev,
+          address: "Could not find coordinates from this address. Paste the full address from Google Maps.",
+          coords: "Coordinates not set yet. Tap 'Set coords from address' again after pasting the full address.",
+        }));
+        scrollToField("address");
+        return;
+      }
+
+      setLat(String(latN));
+      setLng(String(lngN));
+
+      if (formErrors.address) clearFieldError("address");
+      if (formErrors.coords) clearFieldError("coords");
+      setSubmitError(null);
+      notify("Coordinates set from address. Use OPEN MAPS to verify.");
+    } catch (e: any) {
+      setFormErrors((prev) => ({
+        ...prev,
+        address: e?.message ?? "Failed to set coordinates from address. Try pasting the full Google Maps address.",
+      }));
+      scrollToField("address");
+    } finally {
+      setAddrGeocoding(false);
+    }
+  }, [
+    clearFieldError,
+    formErrors.address,
+    formErrors.coords,
+    locationName,
+    notify,
+    scrollToField,
+    setFieldErrorAndScroll,
+  ]);
 
   const createEvent = useCallback(async () => {
-    if (!groupId) {
-      Alert.alert("Missing group", "Please select a group first.");
-      return;
-    }
+    setSubmitError(null);
+
+    const errs: FormErrors = {};
+
+    if (!groupId) errs.group = "Please select a group.";
 
     const eventTitle = title.trim();
-    if (!eventTitle) {
-      Alert.alert("Missing title", "Please enter an event title.");
-      return;
-    }
+    if (!eventTitle) errs.title = "Title is required.";
 
-    const r = Number(radiusM);
-    const w = Number(windowMin);
+    const startTrim = startUtc.trim();
+    const endTrim = endUtc.trim();
 
-    if (!validateIso(startUtc)) {
-      Alert.alert("Invalid start", "Start must be a valid UTC ISO string ending in Z.");
-      return;
-    }
-    if (!validateIso(endUtc)) {
-      Alert.alert("Invalid end", "End must be a valid UTC ISO string ending in Z.");
-      return;
-    }
+    if (!startTrim) errs.start = "Start is required.";
+    if (!endTrim) errs.end = "End is required.";
 
-    const startLocal = safeParseIso(startUtc);
-    const expectedEndLocal = buildEndLocalOrNull(startLocal, DEFAULT_DURATION_MINUTES);
-    if (!expectedEndLocal) {
-      Alert.alert(
-        "Same-day only",
-        `Start + ${DEFAULT_DURATION_MINUTES} minutes must stay within the same day. Please pick a different start time.`
-      );
-      return;
+    if (startTrim && !validateIso(startTrim)) errs.start = "Start must be a valid UTC ISO string ending in Z.";
+    if (endTrim && !validateIso(endTrim)) errs.end = "End must be a valid UTC ISO string ending in Z.";
+
+    if (startTrim && validateIso(startTrim)) {
+      const startLocal = safeParseIso(startTrim);
+      const expectedEndLocal = buildEndLocalOrNull(startLocal, DEFAULT_DURATION_MINUTES);
+      if (!expectedEndLocal) {
+        errs.start = `Start + ${DEFAULT_DURATION_MINUTES} minutes must stay within the same day.`;
+      }
     }
 
     const address = locationName.trim();
-    if (!address) {
-      Alert.alert("Missing address", "Please paste the full venue address (from Google Maps).");
+    if (!address) errs.address = "Venue address is required.";
+
+    const latTrim = lat.trim();
+    const lngTrim = lng.trim();
+
+    if (!latTrim || !lngTrim) {
+      errs.coords = "Venue coordinates are required.";
+    } else {
+      const latN = Number(latTrim);
+      const lngN = Number(lngTrim);
+      if (!Number.isFinite(latN) || !Number.isFinite(lngN) || !isValidLatLngRange(latN, lngN)) {
+        errs.coords = "Coordinates must be valid lat (-90..90) and lng (-180..180).";
+      }
+    }
+
+    const rTrim = radiusM.trim();
+    const wTrim = windowMin.trim();
+
+    if (!rTrim) errs.radius = "Radius is required.";
+    if (!wTrim) errs.window = "Window is required.";
+
+    const r = Number(rTrim);
+    if (rTrim && (!Number.isFinite(r) || r <= 0)) errs.radius = "Radius must be a positive number.";
+
+    const w = Number(wTrim);
+    if (wTrim && (!Number.isFinite(w) || w < 0)) errs.window = "Window must be 0 or more.";
+
+    if (Object.keys(errs).length > 0) {
+      setErrorsAndScroll(errs);
       return;
     }
 
-    if (!lat || !lng) {
-      Alert.alert("Missing coordinates", "Please set venue coordinates (Use current location or Advanced lat/lng).");
-      return;
-    }
-
-    const latN = Number(lat);
-    const lngN = Number(lng);
-    if (Number.isNaN(latN) || Number.isNaN(lngN)) {
-      Alert.alert("Invalid coordinates", "Lat/lng must be numbers.");
-      return;
-    }
-    if (!isValidLatLngRange(latN, lngN)) {
-      Alert.alert("Invalid coordinates", "Lat must be -90..90 and Lng must be -180..180.");
-      return;
-    }
-
-    if (Number.isNaN(r) || r <= 0) {
-      Alert.alert("Invalid radius", "Radius must be a positive number.");
-      return;
-    }
-    if (Number.isNaN(w) || w < 0) {
-      Alert.alert("Invalid window", "Window must be a non-negative number.");
-      return;
-    }
+    const latN = Number(latTrim);
+    const lngN = Number(lngTrim);
 
     setSubmitting(true);
     try {
       const payload = {
         group_id: groupId,
         title: eventTitle,
-        start_utc: startUtc,
-        end_utc: endUtc,
+        start_utc: startTrim,
+        end_utc: endTrim,
         lat: latN,
         lng: lngN,
         radius_m: r,
@@ -708,15 +805,31 @@ export default function OrganizeIndexScreen() {
       if (res.error) throw res.error;
 
       notify("Event created.");
+
+      setFormErrors({});
+      setSubmitError(null);
+
       setTitle("");
       setLocationName("");
       await fetchEventsForGroup(groupId);
     } catch (e: any) {
-      Alert.alert("Create failed", e?.message ?? "Failed to create event");
+      setSubmitError(e?.message ?? "Failed to create event");
     } finally {
       setSubmitting(false);
     }
-  }, [endUtc, fetchEventsForGroup, groupId, lat, lng, locationName, radiusM, startUtc, title, windowMin]);
+  }, [
+    endUtc,
+    fetchEventsForGroup,
+    groupId,
+    lat,
+    lng,
+    locationName,
+    radiusM,
+    setErrorsAndScroll,
+    startUtc,
+    title,
+    windowMin,
+  ]);
 
   const openEvent = useCallback(
     (eventId: string) => {
@@ -749,6 +862,7 @@ export default function OrganizeIndexScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={styles.container}
       contentContainerStyle={{ paddingBottom: 24 }}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
@@ -762,67 +876,121 @@ export default function OrganizeIndexScreen() {
       ) : null}
 
       {role === "organizer" ? (
-        <View style={styles.card}>
+        <View
+          style={styles.card}
+          onLayout={(e) => {
+            const y = e?.nativeEvent?.layout?.y;
+            if (typeof y === "number") setCreateCardY(y);
+          }}
+        >
           <Text style={styles.cardTitle}>Create event</Text>
 
-          <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>Group</Text>
+          {submitError ? (
+            <View style={styles.inlineErrorBlock}>
+              <Text style={styles.inlineErrorText}>{submitError}</Text>
+            </View>
+          ) : null}
 
-            <TouchableOpacity style={styles.btnSmall} onPress={openManageGroups}>
-              <Text style={styles.btnSmallText}>MANAGE GROUPS</Text>
-            </TouchableOpacity>
+          <View onLayout={registerFieldY("group")}>
+            <Text style={styles.label}>Group</Text>
+            <View style={styles.row}>
+              <TouchableOpacity style={styles.btnSmall} onPress={openManageGroups}>
+                <Text style={styles.btnSmallText}>MANAGE GROUPS</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ height: 10 }} />
+
+            {groups.length === 0 ? (
+              <Text style={styles.help}>No groups found. Create a group first.</Text>
+            ) : (
+              <FlatList
+                horizontal
+                data={groups}
+                keyExtractor={(g) => g.id}
+                renderItem={({ item }) => {
+                  const active = item.id === groupId;
+                  return (
+                    <TouchableOpacity
+                      style={[styles.chip, active && styles.chipActive]}
+                      onPress={async () => {
+                        setGroupId(item.id);
+                        if (formErrors.group) clearFieldError("group");
+                        setSubmitError(null);
+                        await fetchEventsForGroup(item.id);
+                      }}
+                    >
+                      <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                        {item.name ?? "(Untitled group)"}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            )}
+
+            {renderFieldError("group")}
           </View>
-
-          {groups.length === 0 ? (
-            <Text style={styles.help}>No groups found. Create a group first.</Text>
-          ) : (
-            <FlatList
-              horizontal
-              data={groups}
-              keyExtractor={(g) => g.id}
-              renderItem={({ item }) => {
-                const active = item.id === groupId;
-                return (
-                  <TouchableOpacity
-                    style={[styles.chip, active && styles.chipActive]}
-                    onPress={async () => {
-                      setGroupId(item.id);
-                      await fetchEventsForGroup(item.id);
-                    }}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                      {item.name ?? "(Untitled group)"}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              }}
-            />
-          )}
 
           <View style={{ height: 12 }} />
 
-          <Text style={styles.label}>Title (required)</Text>
-          <TextInput style={styles.input} placeholder="e.g. Math 101 — Quiz 2" value={title} onChangeText={setTitle} />
-
-          <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>Start (local)</Text>
-            <TouchableOpacity style={styles.btnSmall} onPress={useLocalNow}>
-              <Text style={styles.btnSmallText}>Use local now</Text>
-            </TouchableOpacity>
+          <View onLayout={registerFieldY("title")}>
+            <Text style={styles.label}>Title (required)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. Math 101 — Quiz 2"
+              value={title}
+              onChangeText={(t) => {
+                setTitle(t);
+                if (formErrors.title) clearFieldError("title");
+                setSubmitError(null);
+              }}
+            />
+            {renderFieldError("title")}
           </View>
 
-          <Pressable style={styles.pickerField} onPress={openStartPicker}>
-            <Text style={startLocalDisplay ? styles.pickerText : styles.pickerPlaceholder}>
-              {startLocalDisplay ?? "Tap to select start…"}
-            </Text>
-          </Pressable>
+          <View onLayout={registerFieldY("start")}>
+            <Text style={styles.label}>Start (local)</Text>
+            <View style={styles.row}>
+              <TouchableOpacity style={styles.btnSmall} onPress={useLocalNow}>
+                <Text style={styles.btnSmallText}>Use local now</Text>
+              </TouchableOpacity>
+            </View>
 
-          <Text style={styles.label}>End (local)</Text>
-          <Pressable style={styles.pickerField} onPress={() => console.log("[organize] End pressed (picker TODO)")}>
-            <Text style={endLocalDisplay ? styles.pickerText : styles.pickerPlaceholder}>
-              {endLocalDisplay ?? "Tap to select end…"}
-            </Text>
-          </Pressable>
+            <View style={{ height: 10 }} />
+
+            <Pressable
+              style={styles.pickerField}
+              onPress={() => {
+                if (formErrors.start) clearFieldError("start");
+                if (formErrors.end) clearFieldError("end");
+                setSubmitError(null);
+                openStartPicker();
+              }}
+            >
+              <Text style={startLocalDisplay ? styles.pickerText : styles.pickerPlaceholder}>
+                {startLocalDisplay ?? "Tap to select start…"}
+              </Text>
+            </Pressable>
+            {renderFieldError("start")}
+          </View>
+
+          <View onLayout={registerFieldY("end")}>
+            <Text style={styles.label}>End (local)</Text>
+            <Pressable
+              style={styles.pickerField}
+              onPress={() => {
+                if (formErrors.end) clearFieldError("end");
+                setSubmitError(null);
+                console.log("[organize] End pressed (picker TODO)");
+              }}
+            >
+              <Text style={endLocalDisplay ? styles.pickerText : styles.pickerPlaceholder}>
+                {endLocalDisplay ?? "Tap to select end…"}
+              </Text>
+            </Pressable>
+            {renderFieldError("end")}
+          </View>
 
           <TouchableOpacity style={styles.advancedToggle} onPress={() => setShowAdvancedTime((v) => !v)}>
             <Text style={styles.advancedToggleText}>
@@ -837,7 +1005,11 @@ export default function OrganizeIndexScreen() {
                 style={styles.inputMono}
                 placeholder="e.g. 2025-08-28T05:18:02.660Z"
                 value={startUtc}
-                onChangeText={setStartUtc}
+                onChangeText={(t) => {
+                  setStartUtc(t);
+                  if (formErrors.start) clearFieldError("start");
+                  setSubmitError(null);
+                }}
                 autoCapitalize="none"
                 autoCorrect={false}
               />
@@ -847,7 +1019,11 @@ export default function OrganizeIndexScreen() {
                 style={styles.inputMono}
                 placeholder="e.g. 2025-08-28T06:18:02.660Z"
                 value={endUtc}
-                onChangeText={setEndUtc}
+                onChangeText={(t) => {
+                  setEndUtc(t);
+                  if (formErrors.end) clearFieldError("end");
+                  setSubmitError(null);
+                }}
                 autoCapitalize="none"
                 autoCorrect={false}
               />
@@ -856,79 +1032,96 @@ export default function OrganizeIndexScreen() {
 
           <View style={{ height: 6 }} />
 
-          <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>Venue address (required)</Text>
-            <TouchableOpacity style={styles.btnSmall} onPress={() => openGoogleMapsSearch(addressText || "Melbourne")}>
-              <Text style={styles.btnSmallText}>OPEN MAPS</Text>
-            </TouchableOpacity>
+          <View onLayout={registerFieldY("address")}>
+            <Text style={styles.label}>Venue address (required)</Text>
+
+            <TextInput
+              style={styles.input}
+              placeholder="Paste full address from Google Maps (e.g. 211 La Trobe St, Melbourne VIC 3000)"
+              value={locationName}
+              onChangeText={(t) => {
+                setLocationName(t);
+                if (formErrors.address) clearFieldError("address");
+                setSubmitError(null);
+              }}
+              autoCapitalize="words"
+              autoCorrect={false}
+            />
+
+            <Text style={[styles.helpSmall, { marginTop: -2 }]}>
+              If you only know a place name (e.g. &quot;Chadstone Shopping Centre&quot;), search it in Google Maps, then
+              paste the full address here.
+            </Text>
+
+            <View style={{ height: 10 }} />
+
+            <View style={styles.row}>
+              <TouchableOpacity style={styles.btnSmall} onPress={() => openGoogleMapsSearch(addressText || "Melbourne")}>
+                <Text style={styles.btnSmallText}>OPEN MAPS</Text>
+              </TouchableOpacity>
+            </View>
+
+            {renderFieldError("address")}
           </View>
-
-          <TextInput
-            style={styles.input}
-            placeholder="Paste full address from Google Maps (e.g. 211 La Trobe St, Melbourne VIC 3000)"
-            value={locationName}
-            onChangeText={setLocationName}
-            autoCapitalize="words"
-            autoCorrect={false}
-          />
-
-          <Text style={[styles.helpSmall, { marginTop: -2 }]}>
-            If you only know a place name (e.g. &quot;Chadstone Shopping Centre&quot;), find its address in Google Maps
-            and paste it here.
-          </Text>
 
           <View style={{ height: 8 }} />
 
-          <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>Venue coordinates</Text>
+          <View onLayout={registerFieldY("coords")}>
+            <Text style={styles.label}>Venue coordinates</Text>
 
-            <TouchableOpacity style={styles.btnSmall} onPress={useCurrentLocation}>
-              <Text style={styles.btnSmallText}>Use current location</Text>
-            </TouchableOpacity>
-
-            <View style={{ width: 8 }} />
-
-            <TouchableOpacity
-              style={[styles.btnSmall, !hasCoords && styles.btnSmallDisabled]}
-              onPress={openGoogleMapsForCoords}
-              disabled={!hasCoords}
-            >
-              <Text style={styles.btnSmallText}>OPEN COORDS</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.rowBetween}>
-            <Text style={styles.helpSmall}>
-              {hasCoords ? "Coordinates set." : "No coordinates yet. Use current location or Advanced lat/lng."}
-            </Text>
-            <TouchableOpacity style={styles.advancedToggleInline} onPress={() => setShowAdvancedLocation((v) => !v)}>
-              <Text style={styles.advancedToggleText}>
-                {showAdvancedLocation ? "Hide advanced (lat/lng)" : "Show advanced (lat/lng)"}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          {showAdvancedLocation ? (
-            <View style={styles.advancedBlock}>
-              <Text style={styles.label}>Venue lat / lng</Text>
-              <View style={styles.row}>
-                <TextInput
-                  style={[styles.inputMono, styles.rowInput]}
-                  placeholder="lat (e.g. -37.9025)"
-                  value={lat}
-                  onChangeText={setLat}
-                  keyboardType="decimal-pad"
-                />
-                <TextInput
-                  style={[styles.inputMono, styles.rowInputNoRight]}
-                  placeholder="lng (e.g. 145.0394)"
-                  value={lng}
-                  onChangeText={setLng}
-                  keyboardType="decimal-pad"
-                />
-              </View>
+            <View style={styles.row}>
+              <TouchableOpacity
+                style={[styles.btnSmall, addrGeocoding && styles.btnSmallDisabled]}
+                onPress={setCoordsFromAddress}
+                disabled={addrGeocoding}
+              >
+                <Text style={styles.btnSmallText}>{addrGeocoding ? "SETTING…" : "SET COORDS FROM ADDRESS"}</Text>
+              </TouchableOpacity>
             </View>
-          ) : null}
+
+            <View style={styles.rowBetween}>
+              <Text style={styles.helpSmall}>
+                {hasCoords ? "Coordinates set." : "No coordinates yet. Use 'Set coords from address' or Advanced lat/lng."}
+              </Text>
+              <TouchableOpacity style={styles.advancedToggleInline} onPress={() => setShowAdvancedLocation((v) => !v)}>
+                <Text style={styles.advancedToggleText}>
+                  {showAdvancedLocation ? "Hide advanced (lat/lng)" : "Show advanced (lat/lng)"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {showAdvancedLocation ? (
+              <View style={styles.advancedBlock}>
+                <Text style={styles.label}>Venue lat / lng</Text>
+                <View style={styles.row}>
+                  <TextInput
+                    style={[styles.inputMono, styles.rowInput]}
+                    placeholder="lat (e.g. -37.9025)"
+                    value={lat}
+                    onChangeText={(t) => {
+                      setLat(t);
+                      if (formErrors.coords) clearFieldError("coords");
+                      setSubmitError(null);
+                    }}
+                    keyboardType="decimal-pad"
+                  />
+                  <TextInput
+                    style={[styles.inputMono, styles.rowInputNoRight]}
+                    placeholder="lng (e.g. 145.0394)"
+                    value={lng}
+                    onChangeText={(t) => {
+                      setLng(t);
+                      if (formErrors.coords) clearFieldError("coords");
+                      setSubmitError(null);
+                    }}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+              </View>
+            ) : null}
+
+            {renderFieldError("coords")}
+          </View>
 
           <TouchableOpacity style={styles.secondaryToggle} onPress={() => setShowPlaceSearch((v) => !v)}>
             <Text style={styles.secondaryToggleText}>
@@ -992,15 +1185,39 @@ export default function OrganizeIndexScreen() {
             </View>
           ) : null}
 
-          <View style={styles.row}>
-            <View style={{ flex: 1, marginRight: 10 }}>
-              <Text style={styles.label}>Radius (m)</Text>
-              <TextInput style={styles.input} value={radiusM} onChangeText={setRadiusM} keyboardType="number-pad" />
-            </View>
+          <View style={{ height: 10 }} />
 
-            <View style={{ flex: 1 }}>
-              <Text style={styles.label}>Window ± (min)</Text>
-              <TextInput style={styles.input} value={windowMin} onChangeText={setWindowMin} keyboardType="number-pad" />
+          <View onLayout={registerFieldY("radius")}>
+            <View style={styles.row}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={styles.label}>Radius (m)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={radiusM}
+                  onChangeText={(t) => {
+                    setRadiusM(t);
+                    if (formErrors.radius) clearFieldError("radius");
+                    setSubmitError(null);
+                  }}
+                  keyboardType="number-pad"
+                />
+                {renderFieldError("radius")}
+              </View>
+
+              <View style={{ flex: 1 }} onLayout={registerFieldY("window")}>
+                <Text style={styles.label}>Window ± (min)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={windowMin}
+                  onChangeText={(t) => {
+                    setWindowMin(t);
+                    if (formErrors.window) clearFieldError("window");
+                    setSubmitError(null);
+                  }}
+                  keyboardType="number-pad"
+                />
+                {renderFieldError("window")}
+              </View>
             </View>
           </View>
 
@@ -1251,7 +1468,6 @@ const styles = StyleSheet.create({
     marginTop: -4,
     marginBottom: 8,
   },
-  rowLabel: { flex: 1 },
   rowInput: { flex: 1, marginRight: 10 },
   rowInputNoRight: { flex: 1, marginRight: 0 },
   btnSmall: {
@@ -1394,4 +1610,19 @@ const styles = StyleSheet.create({
   },
   modalRowTitle: { fontWeight: "900", color: "#111827" },
   modalRowDesc: { color: "#6B7280", marginTop: 4, fontSize: 12 },
+
+  inlineErrorBlock: {
+    backgroundColor: "#FFEAEA",
+    borderColor: "#FF8A8A",
+    borderWidth: 1,
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  inlineErrorText: {
+    color: "#B00020",
+    fontWeight: "700",
+    marginTop: -2,
+    marginBottom: 10,
+  },
 });
