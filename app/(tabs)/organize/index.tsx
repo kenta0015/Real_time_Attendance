@@ -63,6 +63,10 @@ const plusHoursIso = (h: number) => new Date(Date.now() + h * 3600_000).toISOStr
 
 const PLACE_LOG_PREFIX = "[organize][place]";
 
+const AU_STATE_CODES = ["VIC", "NSW", "QLD", "SA", "WA", "TAS", "ACT", "NT"] as const;
+const AU_STATE_REGEX = new RegExp(`\\b(?:${AU_STATE_CODES.join("|")})\\b`, "i");
+const AU_POSTCODE_REGEX = /\b\d{4}\b/;
+
 async function getEffectiveUserId(): Promise<string> {
   try {
     const { data } = await supabase.auth.getUser();
@@ -138,6 +142,38 @@ function buildGoogleMapsSearchUrl(query: string): string {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 }
 
+function analyzeAddressSpecificityAU(address: string): { ok: boolean; missing: string[] } {
+  const a = address.trim();
+  const missing: string[] = [];
+
+  const postcodeMatch = a.match(AU_POSTCODE_REGEX);
+  const postcode = postcodeMatch ? postcodeMatch[0] : null;
+  const hasPostcode = !!postcode;
+
+  const hasState = AU_STATE_REGEX.test(a);
+
+  const head = a.slice(0, 32);
+  const nums = Array.from(head.matchAll(/\d{1,6}/g)).map((m) => m[0]);
+  const nonPostcodeNums = nums.filter((n) => (!postcode ? true : n !== postcode));
+  const streetCandidate = nonPostcodeNums.length > 0 ? nonPostcodeNums[nonPostcodeNums.length - 1] : null;
+  const hasStreetNumber = !!streetCandidate;
+
+  if (!hasStreetNumber) missing.push("street number (e.g., 211)");
+  if (!hasState) missing.push(`state code (${AU_STATE_CODES.join("/")})`);
+  if (!hasPostcode) missing.push("4-digit postcode (e.g., 3000)");
+
+  return { ok: missing.length === 0, missing };
+}
+
+function buildFullAddressAlertBody(missing: string[]): string {
+  const lines = missing.map((m) => `• Missing: ${m}`);
+  lines.push("");
+  lines.push("Open Google Maps → select the place → Share → Copy address → paste it here.");
+  lines.push("");
+  lines.push("Example: 211 La Trobe St, Melbourne VIC 3000");
+  return lines.join("\n");
+}
+
 export default function OrganizeIndexScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ gid?: string }>();
@@ -161,6 +197,8 @@ export default function OrganizeIndexScreen() {
   const [showAdvancedTime, setShowAdvancedTime] = useState(false);
   const [lat, setLat] = useState<string>("");
   const [lng, setLng] = useState<string>("");
+  const [coordsManual, setCoordsManual] = useState(false);
+  const [coordsAddressSnapshot, setCoordsAddressSnapshot] = useState<string | null>(null);
   const [locationName, setLocationName] = useState<string>("");
   const [radiusM, setRadiusM] = useState<string>("50");
   const [windowMin, setWindowMin] = useState<string>("30");
@@ -545,6 +583,8 @@ export default function OrganizeIndexScreen() {
 
       setLat(String(p.lat));
       setLng(String(p.lng));
+      setCoordsManual(false);
+      setCoordsAddressSnapshot(null);
       if (formErrors.coords) clearFieldError("coords");
       setSubmitError(null);
 
@@ -552,7 +592,7 @@ export default function OrganizeIndexScreen() {
       setPlaceError(null);
       notify("Coordinates set from quick search. Please paste the full address from Google Maps into Venue address.");
     },
-    [clearFieldError, formErrors.coords, locationName]
+    [clearFieldError, formErrors.coords, locationName, notify]
   );
 
   const openManageGroups = useCallback(() => setManageOpen(true), []);
@@ -680,6 +720,18 @@ export default function OrganizeIndexScreen() {
       return;
     }
 
+    const spec = analyzeAddressSpecificityAU(addr);
+    if (!spec.ok) {
+      Alert.alert("Please paste a full address from Google Maps", buildFullAddressAlertBody(spec.missing));
+      setFormErrors((prev) => ({
+        ...prev,
+        address: `Please paste a full address from Google Maps. Missing: ${spec.missing.join(", ")}.`,
+        coords: "Coordinates will not be derived from a vague address. Paste a full address or enter lat/lng in Advanced.",
+      }));
+      scrollToField("address");
+      return;
+    }
+
     setAddrGeocoding(true);
     try {
       const raw = await Location.geocodeAsync(addr);
@@ -700,6 +752,8 @@ export default function OrganizeIndexScreen() {
 
       setLat(String(latN));
       setLng(String(lngN));
+      setCoordsManual(false);
+      setCoordsAddressSnapshot(addr);
 
       if (formErrors.address) clearFieldError("address");
       if (formErrors.coords) clearFieldError("coords");
@@ -728,6 +782,7 @@ export default function OrganizeIndexScreen() {
     setSubmitError(null);
 
     const errs: FormErrors = {};
+    let addressSpecificityMissing: string[] | null = null;
 
     if (!groupId) errs.group = "Please select a group.";
 
@@ -754,16 +809,12 @@ export default function OrganizeIndexScreen() {
     const address = locationName.trim();
     if (!address) errs.address = "Venue address is required.";
 
-    const latTrim = lat.trim();
-    const lngTrim = lng.trim();
-
-    if (!latTrim || !lngTrim) {
-      errs.coords = "Venue coordinates are required.";
-    } else {
-      const latN = Number(latTrim);
-      const lngN = Number(lngTrim);
-      if (!Number.isFinite(latN) || !Number.isFinite(lngN) || !isValidLatLngRange(latN, lngN)) {
-        errs.coords = "Coordinates must be valid lat (-90..90) and lng (-180..180).";
+    if (address && !coordsManual) {
+      const spec = analyzeAddressSpecificityAU(address);
+      if (!spec.ok) {
+        addressSpecificityMissing = spec.missing;
+        errs.address = `Please paste a full address from Google Maps. Missing: ${spec.missing.join(", ")}.`;
+        errs.coords = "Coordinates will not be derived from a vague address. Paste a full address or enter lat/lng in Advanced.";
       }
     }
 
@@ -780,22 +831,99 @@ export default function OrganizeIndexScreen() {
     if (wTrim && (!Number.isFinite(w) || w < 0)) errs.window = "Window must be 0 or more.";
 
     if (Object.keys(errs).length > 0) {
+      if (addressSpecificityMissing) {
+        Alert.alert("Please paste a full address from Google Maps", buildFullAddressAlertBody(addressSpecificityMissing));
+      }
       setErrorsAndScroll(errs);
       return;
     }
 
-    const latN = Number(latTrim);
-    const lngN = Number(lngTrim);
+    const latTrim = lat.trim();
+    const lngTrim = lng.trim();
+
+    const parsedLat = Number(latTrim);
+    const parsedLng = Number(lngTrim);
+    const existingCoordsValid =
+      !!latTrim &&
+      !!lngTrim &&
+      Number.isFinite(parsedLat) &&
+      Number.isFinite(parsedLng) &&
+      isValidLatLngRange(parsedLat, parsedLng);
 
     setSubmitting(true);
     try {
+      let finalLatN: number | null = null;
+      let finalLngN: number | null = null;
+
+      if (coordsManual) {
+        if (!existingCoordsValid) {
+          setErrorsAndScroll({
+            coords: "Coordinates must be valid lat (-90..90) and lng (-180..180).",
+          });
+          return;
+        }
+        finalLatN = parsedLat;
+        finalLngN = parsedLng;
+      } else {
+        const canReuse =
+          existingCoordsValid && typeof coordsAddressSnapshot === "string" && coordsAddressSnapshot.trim() === address;
+
+        if (canReuse) {
+          finalLatN = parsedLat;
+          finalLngN = parsedLng;
+        } else {
+          setAddrGeocoding(true);
+          try {
+            const raw = await Location.geocodeAsync(address);
+            const first = raw?.[0];
+
+            const latN = first ? Number((first as any).latitude) : NaN;
+            const lngN = first ? Number((first as any).longitude) : NaN;
+
+            if (!Number.isFinite(latN) || !Number.isFinite(lngN) || !isValidLatLngRange(latN, lngN)) {
+              setFormErrors((prev) => ({
+                ...prev,
+                address:
+                  "Could not find coordinates from this address. Paste the full address from Google Maps (include street number, suburb, VIC, and postcode).",
+                coords: "Coordinates could not be derived. Please paste a more specific address or enter lat/lng in Advanced.",
+              }));
+              scrollToField("address");
+              return;
+            }
+
+            setLat(String(latN));
+            setLng(String(lngN));
+            setCoordsManual(false);
+            setCoordsAddressSnapshot(address);
+
+            if (formErrors.address) clearFieldError("address");
+            if (formErrors.coords) clearFieldError("coords");
+            setSubmitError(null);
+
+            finalLatN = latN;
+            finalLngN = lngN;
+          } finally {
+            setAddrGeocoding(false);
+          }
+        }
+      }
+
+      if (finalLatN === null || finalLngN === null || !isValidLatLngRange(finalLatN, finalLngN)) {
+        setFormErrors((prev) => ({
+          ...prev,
+          coords: "Coordinates are required. Paste a full address (recommended) or enter lat/lng in Advanced.",
+        }));
+        scrollToField("coords");
+        return;
+      }
+
       const payload = {
         group_id: groupId,
         title: eventTitle,
         start_utc: startTrim,
         end_utc: endTrim,
-        lat: latN,
-        lng: lngN,
+        lat: finalLatN,
+        lng: finalLngN,
         radius_m: r,
         window_minutes: w,
         location_name: address,
@@ -816,19 +944,26 @@ export default function OrganizeIndexScreen() {
       setSubmitError(e?.message ?? "Failed to create event");
     } finally {
       setSubmitting(false);
+      setAddrGeocoding(false);
     }
   }, [
+    coordsAddressSnapshot,
+    coordsManual,
     endUtc,
     fetchEventsForGroup,
+    formErrors.address,
+    formErrors.coords,
     groupId,
     lat,
     lng,
     locationName,
     radiusM,
     setErrorsAndScroll,
+    scrollToField,
     startUtc,
     title,
     windowMin,
+    clearFieldError,
   ]);
 
   const openEvent = useCallback(
@@ -850,6 +985,15 @@ export default function OrganizeIndexScreen() {
   }, [lat, lng]);
 
   const addressText = useMemo(() => locationName.trim(), [locationName]);
+
+  const coordsStale = useMemo(() => {
+    const addr = locationName.trim();
+    if (!addr) return false;
+    if (!hasCoords) return false;
+    if (coordsManual) return false;
+    if (!coordsAddressSnapshot) return false;
+    return coordsAddressSnapshot.trim() !== addr;
+  }, [coordsAddressSnapshot, coordsManual, hasCoords, locationName]);
 
   if (loading) {
     return (
@@ -1081,7 +1225,13 @@ export default function OrganizeIndexScreen() {
 
             <View style={styles.rowBetween}>
               <Text style={styles.helpSmall}>
-                {hasCoords ? "Coordinates set." : "No coordinates yet. Use 'Set coords from address' or Advanced lat/lng."}
+                {hasCoords
+                  ? coordsManual
+                    ? "Coordinates set (manual override)."
+                    : coordsStale
+                      ? "Coordinates set (stale — address changed; will re-derive on Create)."
+                      : "Coordinates set."
+                  : "No coordinates yet. Create will derive from address, or use Advanced lat/lng."}
               </Text>
               <TouchableOpacity style={styles.advancedToggleInline} onPress={() => setShowAdvancedLocation((v) => !v)}>
                 <Text style={styles.advancedToggleText}>
@@ -1100,6 +1250,8 @@ export default function OrganizeIndexScreen() {
                     value={lat}
                     onChangeText={(t) => {
                       setLat(t);
+                      setCoordsManual(true);
+                      setCoordsAddressSnapshot(null);
                       if (formErrors.coords) clearFieldError("coords");
                       setSubmitError(null);
                     }}
@@ -1111,6 +1263,8 @@ export default function OrganizeIndexScreen() {
                     value={lng}
                     onChangeText={(t) => {
                       setLng(t);
+                      setCoordsManual(true);
+                      setCoordsAddressSnapshot(null);
                       if (formErrors.coords) clearFieldError("coords");
                       setSubmitError(null);
                     }}
@@ -1230,8 +1384,8 @@ export default function OrganizeIndexScreen() {
           </TouchableOpacity>
 
           <Text style={styles.helpSmall}>
-            Required: title + venue address + coordinates. Times are stored as UTC ISO. Coordinates are used for geofence
-            check-in.
+            Required: title + venue address. Coordinates are auto-derived from address on Create (or use Advanced lat/lng).
+            Times are stored as UTC ISO. Coordinates are used for geofence check-in.
           </Text>
         </View>
       ) : (
