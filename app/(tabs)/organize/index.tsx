@@ -1,5 +1,3 @@
-// FILE: app/(tabs)/organize/index.tsx
-
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   View,
@@ -41,10 +39,24 @@ type EventRow = {
   group_id: string | null;
 };
 
+type PlaceCandidate = {
+  id: string;
+  title: string;
+  subtitle: string;
+  lat: number;
+  lng: number;
+};
+
 const DEFAULT_DURATION_MINUTES = 60;
+
+const MELBOURNE_CBD = { lat: -37.8136, lng: 144.9631 };
+const MAX_PLACE_RESULTS = 10;
+const DEDUPE_RADIUS_M = 100;
 
 const nowIso = () => new Date().toISOString();
 const plusHoursIso = (h: number) => new Date(Date.now() + h * 3600_000).toISOString();
+
+const PLACE_LOG_PREFIX = "[organize][place]";
 
 async function getEffectiveUserId(): Promise<string> {
   try {
@@ -88,17 +100,45 @@ function setLocalTimeKeepDate(base: Date, newTime: Date): Date {
 }
 
 function isSameLocalDay(a: Date, b: Date): boolean {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
 function buildEndLocalOrNull(startLocal: Date, minutes: number): Date | null {
   const endLocal = new Date(startLocal.getTime() + minutes * 60_000);
   if (!isSameLocalDay(startLocal, endLocal)) return null;
   return endLocal;
+}
+
+function isValidLatLngRange(lat: number, lng: number): boolean {
+  return lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180;
+}
+
+function distanceMetersHaversine(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const R = 6371_000;
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const lat1 = toRad(aLat);
+  const lat2 = toRad(bLat);
+
+  const sin1 = Math.sin(dLat / 2);
+  const sin2 = Math.sin(dLng / 2);
+  const h = sin1 * sin1 + Math.cos(lat1) * Math.cos(lat2) * sin2 * sin2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function buildGoogleMapsSearchUrl(query: string): string {
+  const q = query.trim();
+  if (!q) return "https://www.google.com/maps";
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+}
+
+function buildGoogleMapsCoordsUrl(lat: string, lng: string): string | null {
+  const latN = Number(lat);
+  const lngN = Number(lng);
+  if (!Number.isFinite(latN) || !Number.isFinite(lngN)) return null;
+  if (!isValidLatLngRange(latN, lngN)) return null;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${latN},${lngN}`)}`;
 }
 
 export default function OrganizeIndexScreen() {
@@ -126,6 +166,15 @@ export default function OrganizeIndexScreen() {
   const [radiusM, setRadiusM] = useState<string>("50");
   const [windowMin, setWindowMin] = useState<string>("30");
   const [submitting, setSubmitting] = useState(false);
+
+  // location search (kept as optional helper; may be inaccurate depending on device/provider)
+  const [placeQuery, setPlaceQuery] = useState<string>("");
+  const [placeResults, setPlaceResults] = useState<PlaceCandidate[]>([]);
+  const [placeError, setPlaceError] = useState<string | null>(null);
+  const [placeSearched, setPlaceSearched] = useState(false);
+  const [placeSearching, setPlaceSearching] = useState(false);
+  const [showAdvancedLocation, setShowAdvancedLocation] = useState(false);
+  const [showPlaceSearch, setShowPlaceSearch] = useState(false);
 
   // Manage Groups modal
   const [manageOpen, setManageOpen] = useState(false);
@@ -186,9 +235,7 @@ export default function OrganizeIndexScreen() {
 
       const ev = await supabase
         .from("events")
-        .select(
-          "id, title, start_utc, end_utc, lat, lng, radius_m, window_minutes, location_name, group_id"
-        )
+        .select("id, title, start_utc, end_utc, lat, lng, radius_m, window_minutes, location_name, group_id")
         .eq("group_id", gid)
         .order("start_utc", { ascending: false })
         .limit(20);
@@ -286,11 +333,182 @@ export default function OrganizeIndexScreen() {
       const loc = await Location.getCurrentPositionAsync({});
       setLat(String(loc.coords.latitude));
       setLng(String(loc.coords.longitude));
+      setPlaceError(null);
+      setPlaceSearched(false);
+      setPlaceSearching(false);
+      setPlaceResults([]);
       notify("Filled lat/lng from current location.");
     } catch (e: any) {
       Alert.alert("Location error", e?.message ?? "Failed to get current location");
     }
   }, []);
+
+  const runPlaceSearchForward = useCallback(async () => {
+    const startedAt = Date.now();
+    const q = placeQuery.trim();
+
+    console.log(`${PLACE_LOG_PREFIX} search start`, {
+      q,
+      qLen: q.length,
+      ts: new Date().toISOString(),
+      maxResults: MAX_PLACE_RESULTS,
+      dedupeRadiusM: DEDUPE_RADIUS_M,
+      melbourneCbd: MELBOURNE_CBD,
+    });
+
+    setPlaceError(null);
+    setPlaceSearched(false);
+    setPlaceResults([]);
+
+    if (q.length < 2) {
+      console.log(`${PLACE_LOG_PREFIX} blocked: query too short`, { q, qLen: q.length });
+      setPlaceError("Please type at least 2 characters to search.");
+      setPlaceSearched(true);
+      return;
+    }
+
+    setPlaceSearching(true);
+    try {
+      const raw = await Location.geocodeAsync(q);
+
+      console.log(`${PLACE_LOG_PREFIX} geocode raw returned`, {
+        rawCount: raw?.length ?? 0,
+        sample: (raw ?? []).slice(0, 5).map((r) => ({
+          latitude: (r as any)?.latitude,
+          longitude: (r as any)?.longitude,
+        })),
+      });
+
+      const valid = (raw ?? [])
+        .map((r, idx) => {
+          const latN = typeof (r as any).latitude === "number" ? (r as any).latitude : Number((r as any).latitude);
+          const lngN = typeof (r as any).longitude === "number" ? (r as any).longitude : Number((r as any).longitude);
+          if (Number.isNaN(latN) || Number.isNaN(lngN)) return null;
+          if (!isValidLatLngRange(latN, lngN)) return null;
+
+          const distToCbdM = distanceMetersHaversine(MELBOURNE_CBD.lat, MELBOURNE_CBD.lng, latN, lngN);
+
+          return {
+            _idx: idx,
+            lat: latN,
+            lng: lngN,
+            distToCbdM,
+          };
+        })
+        .filter((x): x is { _idx: number; lat: number; lng: number; distToCbdM: number } => !!x);
+
+      console.log(`${PLACE_LOG_PREFIX} valid coords`, {
+        validCount: valid.length,
+        invalidCount: (raw?.length ?? 0) - valid.length,
+        sample: valid.slice(0, 8).map((v) => ({
+          idx: v._idx,
+          lat: Number(v.lat.toFixed(6)),
+          lng: Number(v.lng.toFixed(6)),
+          distToCbdM: Math.round(v.distToCbdM),
+        })),
+      });
+
+      valid.sort((a, b) => a.distToCbdM - b.distToCbdM);
+
+      console.log(`${PLACE_LOG_PREFIX} sorted by CBD distance`, {
+        top: valid.slice(0, 8).map((v) => ({
+          lat: Number(v.lat.toFixed(6)),
+          lng: Number(v.lng.toFixed(6)),
+          distToCbdM: Math.round(v.distToCbdM),
+        })),
+      });
+
+      const deduped: { lat: number; lng: number; distToCbdM: number }[] = [];
+      let collapsedByDedupe = 0;
+
+      for (const r of valid) {
+        const tooClose = deduped.some((k) => distanceMetersHaversine(k.lat, k.lng, r.lat, r.lng) <= DEDUPE_RADIUS_M);
+        if (!tooClose) deduped.push(r);
+        else collapsedByDedupe += 1;
+
+        if (deduped.length >= MAX_PLACE_RESULTS) break;
+      }
+
+      console.log(`${PLACE_LOG_PREFIX} dedupe summary`, {
+        inputCount: valid.length,
+        outputCount: deduped.length,
+        collapsedByDedupe,
+        outputSample: deduped.slice(0, 8).map((v) => ({
+          lat: Number(v.lat.toFixed(6)),
+          lng: Number(v.lng.toFixed(6)),
+          distToCbdM: Math.round(v.distToCbdM),
+        })),
+      });
+
+      const candidates: PlaceCandidate[] = deduped.slice(0, MAX_PLACE_RESULTS).map((r, i) => ({
+        id: `geo-${i}-${r.lat.toFixed(6)}-${r.lng.toFixed(6)}`,
+        title: q,
+        subtitle: `${r.lat.toFixed(6)}, ${r.lng.toFixed(6)}`,
+        lat: r.lat,
+        lng: r.lng,
+      }));
+
+      console.log(`${PLACE_LOG_PREFIX} final candidates`, {
+        candidatesCount: candidates.length,
+        first: candidates[0]
+          ? {
+              id: candidates[0].id,
+              title: candidates[0].title,
+              subtitle: candidates[0].subtitle,
+            }
+          : null,
+        elapsedMs: Date.now() - startedAt,
+      });
+
+      setPlaceSearched(true);
+
+      if (candidates.length === 0) {
+        setPlaceError("No results. Try a more specific keyword (e.g., suburb or street).");
+        setPlaceResults([]);
+        return;
+      }
+
+      setPlaceError(null);
+      setPlaceResults(candidates);
+    } catch (e: any) {
+      console.log(`${PLACE_LOG_PREFIX} search error`, {
+        message: e?.message ?? String(e),
+        name: e?.name,
+        stack: e?.stack,
+        elapsedMs: Date.now() - startedAt,
+      });
+      setPlaceSearched(true);
+      setPlaceResults([]);
+      setPlaceError(e?.message ?? "Search failed. Please try again.");
+    } finally {
+      console.log(`${PLACE_LOG_PREFIX} search end`, { elapsedMs: Date.now() - startedAt });
+      setPlaceSearching(false);
+    }
+  }, [placeQuery]);
+
+  const selectPlace = useCallback(
+    (p: PlaceCandidate) => {
+      console.log(`${PLACE_LOG_PREFIX} select candidate`, {
+        id: p.id,
+        title: p.title,
+        subtitle: p.subtitle,
+        lat: p.lat,
+        lng: p.lng,
+      });
+
+      if (!isValidLatLngRange(p.lat, p.lng)) {
+        Alert.alert("Invalid location", "Selected location has invalid coordinates.");
+        return;
+      }
+
+      setLat(String(p.lat));
+      setLng(String(p.lng));
+      if (!locationName.trim()) setLocationName(p.title);
+      setPlaceError(null);
+      notify("Coordinates set from quick search. Please paste the full address from Google Maps into Venue address.");
+    },
+    [locationName]
+  );
 
   const openManageGroups = useCallback(() => setManageOpen(true), []);
 
@@ -380,9 +598,42 @@ export default function OrganizeIndexScreen() {
     else openStartPickerIOS();
   }, [openStartPickerAndroid, openStartPickerIOS]);
 
+  const openWebUrl = useCallback(async (url: string) => {
+    try {
+      const ok = await Linking.canOpenURL(url);
+      if (!ok) throw new Error("Cannot open URL");
+      await Linking.openURL(url);
+    } catch (e: any) {
+      Alert.alert("Open link failed", e?.message ?? "Failed to open link");
+    }
+  }, []);
+
+  const openGoogleMapsSearch = useCallback(
+    async (query: string) => {
+      const url = buildGoogleMapsSearchUrl(query);
+      await openWebUrl(url);
+    },
+    [openWebUrl]
+  );
+
+  const openGoogleMapsForCoords = useCallback(async () => {
+    const url = buildGoogleMapsCoordsUrl(lat, lng);
+    if (!url) {
+      Alert.alert("Missing coordinates", "Set lat/lng first (Use current location or Advanced lat/lng).");
+      return;
+    }
+    await openWebUrl(url);
+  }, [lat, lng, openWebUrl]);
+
   const createEvent = useCallback(async () => {
     if (!groupId) {
       Alert.alert("Missing group", "Please select a group first.");
+      return;
+    }
+
+    const eventTitle = title.trim();
+    if (!eventTitle) {
+      Alert.alert("Missing title", "Please enter an event title.");
       return;
     }
 
@@ -408,16 +659,28 @@ export default function OrganizeIndexScreen() {
       return;
     }
 
-    if (!lat || !lng) {
-      Alert.alert("Missing location", "Please fill venue lat and lng (or use current location).");
+    const address = locationName.trim();
+    if (!address) {
+      Alert.alert("Missing address", "Please paste the full venue address (from Google Maps).");
       return;
     }
+
+    if (!lat || !lng) {
+      Alert.alert("Missing coordinates", "Please set venue coordinates (Use current location or Advanced lat/lng).");
+      return;
+    }
+
     const latN = Number(lat);
     const lngN = Number(lng);
     if (Number.isNaN(latN) || Number.isNaN(lngN)) {
-      Alert.alert("Invalid location", "Lat/lng must be numbers.");
+      Alert.alert("Invalid coordinates", "Lat/lng must be numbers.");
       return;
     }
+    if (!isValidLatLngRange(latN, lngN)) {
+      Alert.alert("Invalid coordinates", "Lat must be -90..90 and Lng must be -180..180.");
+      return;
+    }
+
     if (Number.isNaN(r) || r <= 0) {
       Alert.alert("Invalid radius", "Radius must be a positive number.");
       return;
@@ -431,14 +694,14 @@ export default function OrganizeIndexScreen() {
     try {
       const payload = {
         group_id: groupId,
-        title: title.trim() ? title.trim() : null,
+        title: eventTitle,
         start_utc: startUtc,
         end_utc: endUtc,
         lat: latN,
         lng: lngN,
         radius_m: r,
         window_minutes: w,
-        location_name: locationName.trim() ? locationName.trim() : null,
+        location_name: address,
       };
 
       const res = await supabase.from("events").insert(payload).select("id").single();
@@ -462,20 +725,18 @@ export default function OrganizeIndexScreen() {
     [router]
   );
 
-  const openWebUrl = useCallback(async (url: string) => {
-    try {
-      const ok = await Linking.canOpenURL(url);
-      if (!ok) throw new Error("Cannot open URL");
-      await Linking.openURL(url);
-    } catch (e: any) {
-      Alert.alert("Open link failed", e?.message ?? "Failed to open link");
-    }
-  }, []);
-
   const groupLabel = useMemo(() => {
     const g = groups.find((x) => x.id === groupId);
     return g?.name ?? "(Select group)";
   }, [groups, groupId]);
+
+  const hasCoords = useMemo(() => {
+    const latN = Number(lat);
+    const lngN = Number(lng);
+    return !!lat && !!lng && !Number.isNaN(latN) && !Number.isNaN(lngN) && isValidLatLngRange(latN, lngN);
+  }, [lat, lng]);
+
+  const addressText = useMemo(() => locationName.trim(), [locationName]);
 
   if (loading) {
     return (
@@ -540,13 +801,8 @@ export default function OrganizeIndexScreen() {
 
           <View style={{ height: 12 }} />
 
-          <Text style={styles.label}>Title (optional — server fills if blank)</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. Math 101 — Quiz 2"
-            value={title}
-            onChangeText={setTitle}
-          />
+          <Text style={styles.label}>Title (required)</Text>
+          <TextInput style={styles.input} placeholder="e.g. Math 101 — Quiz 2" value={title} onChangeText={setTitle} />
 
           <View style={styles.row}>
             <Text style={[styles.label, styles.rowLabel]}>Start (local)</Text>
@@ -562,19 +818,13 @@ export default function OrganizeIndexScreen() {
           </Pressable>
 
           <Text style={styles.label}>End (local)</Text>
-          <Pressable
-            style={styles.pickerField}
-            onPress={() => console.log("[organize] End pressed (picker TODO)")}
-          >
+          <Pressable style={styles.pickerField} onPress={() => console.log("[organize] End pressed (picker TODO)")}>
             <Text style={endLocalDisplay ? styles.pickerText : styles.pickerPlaceholder}>
               {endLocalDisplay ?? "Tap to select end…"}
             </Text>
           </Pressable>
 
-          <TouchableOpacity
-            style={styles.advancedToggle}
-            onPress={() => setShowAdvancedTime((v) => !v)}
-          >
+          <TouchableOpacity style={styles.advancedToggle} onPress={() => setShowAdvancedTime((v) => !v)}>
             <Text style={styles.advancedToggleText}>
               {showAdvancedTime ? "Hide advanced (UTC ISO)" : "Show advanced (UTC ISO)"}
             </Text>
@@ -604,57 +854,153 @@ export default function OrganizeIndexScreen() {
             </View>
           ) : null}
 
+          <View style={{ height: 6 }} />
+
           <View style={styles.row}>
-            <Text style={[styles.label, styles.rowLabel]}>Venue lat / lng</Text>
-            <TouchableOpacity style={styles.btnSmall} onPress={useCurrentLocation}>
-              <Text style={styles.btnSmallText}>Use current location</Text>
+            <Text style={[styles.label, styles.rowLabel]}>Venue address (required)</Text>
+            <TouchableOpacity style={styles.btnSmall} onPress={() => openGoogleMapsSearch(addressText || "Melbourne")}>
+              <Text style={styles.btnSmallText}>OPEN MAPS</Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.row}>
-            <TextInput
-              style={[styles.inputMono, styles.rowInput]}
-              placeholder="lat (e.g. -37.9025)"
-              value={lat}
-              onChangeText={setLat}
-              keyboardType="decimal-pad"
-            />
-            <TextInput
-              style={[styles.inputMono, styles.rowInput]}
-              placeholder="lng (e.g. 145.0394)"
-              value={lng}
-              onChangeText={setLng}
-              keyboardType="decimal-pad"
-            />
-          </View>
-
-          <Text style={styles.label}>Venue name (optional)</Text>
           <TextInput
             style={styles.input}
-            placeholder="e.g. Library Building A"
+            placeholder="Paste full address from Google Maps (e.g. 211 La Trobe St, Melbourne VIC 3000)"
             value={locationName}
             onChangeText={setLocationName}
+            autoCapitalize="words"
+            autoCorrect={false}
           />
+
+          <Text style={[styles.helpSmall, { marginTop: -2 }]}>
+            If you only know a place name (e.g. &quot;Chadstone Shopping Centre&quot;), find its address in Google Maps
+            and paste it here.
+          </Text>
+
+          <View style={{ height: 8 }} />
+
+          <View style={styles.row}>
+            <Text style={[styles.label, styles.rowLabel]}>Venue coordinates</Text>
+
+            <TouchableOpacity style={styles.btnSmall} onPress={useCurrentLocation}>
+              <Text style={styles.btnSmallText}>Use current location</Text>
+            </TouchableOpacity>
+
+            <View style={{ width: 8 }} />
+
+            <TouchableOpacity
+              style={[styles.btnSmall, !hasCoords && styles.btnSmallDisabled]}
+              onPress={openGoogleMapsForCoords}
+              disabled={!hasCoords}
+            >
+              <Text style={styles.btnSmallText}>OPEN COORDS</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.rowBetween}>
+            <Text style={styles.helpSmall}>
+              {hasCoords ? "Coordinates set." : "No coordinates yet. Use current location or Advanced lat/lng."}
+            </Text>
+            <TouchableOpacity style={styles.advancedToggleInline} onPress={() => setShowAdvancedLocation((v) => !v)}>
+              <Text style={styles.advancedToggleText}>
+                {showAdvancedLocation ? "Hide advanced (lat/lng)" : "Show advanced (lat/lng)"}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {showAdvancedLocation ? (
+            <View style={styles.advancedBlock}>
+              <Text style={styles.label}>Venue lat / lng</Text>
+              <View style={styles.row}>
+                <TextInput
+                  style={[styles.inputMono, styles.rowInput]}
+                  placeholder="lat (e.g. -37.9025)"
+                  value={lat}
+                  onChangeText={setLat}
+                  keyboardType="decimal-pad"
+                />
+                <TextInput
+                  style={[styles.inputMono, styles.rowInputNoRight]}
+                  placeholder="lng (e.g. 145.0394)"
+                  value={lng}
+                  onChangeText={setLng}
+                  keyboardType="decimal-pad"
+                />
+              </View>
+            </View>
+          ) : null}
+
+          <TouchableOpacity style={styles.secondaryToggle} onPress={() => setShowPlaceSearch((v) => !v)}>
+            <Text style={styles.secondaryToggleText}>
+              {showPlaceSearch ? "Hide quick search (experimental)" : "Show quick search (experimental)"}
+            </Text>
+          </TouchableOpacity>
+
+          {showPlaceSearch ? (
+            <View style={styles.subCard}>
+              <Text style={styles.label}>Quick search (experimental)</Text>
+              <Text style={[styles.helpSmall, { marginTop: -2 }]}>
+                This uses on-device geocoding and may return the wrong coordinates. Prefer pasting the address from Google
+                Maps.
+              </Text>
+
+              <View style={{ height: 8 }} />
+
+              <View style={styles.searchRow}>
+                <TextInput
+                  style={[styles.input, styles.searchInput]}
+                  placeholder="e.g. Melbourne Central / Albert Park / 123 Example St"
+                  value={placeQuery}
+                  onChangeText={(t) => {
+                    setPlaceQuery(t);
+                    setPlaceError(null);
+                  }}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="search"
+                  onSubmitEditing={runPlaceSearchForward}
+                  editable={!placeSearching}
+                />
+
+                <TouchableOpacity
+                  style={[styles.searchBtn, placeSearching && styles.searchBtnDisabled]}
+                  onPress={runPlaceSearchForward}
+                  disabled={placeSearching}
+                >
+                  {placeSearching ? <ActivityIndicator /> : <Text style={styles.searchBtnText}>Search</Text>}
+                </TouchableOpacity>
+              </View>
+
+              {placeError ? (
+                <Text style={[styles.helpSmall, { marginTop: 6, color: "#B00020" }]}>{placeError}</Text>
+              ) : null}
+
+              {placeSearched ? (
+                placeResults.length === 0 ? (
+                  <Text style={styles.helpSmall}>No candidates.</Text>
+                ) : (
+                  <View style={{ marginTop: 6 }}>
+                    {placeResults.map((p) => (
+                      <TouchableOpacity key={p.id} style={styles.placeRow} onPress={() => selectPlace(p)}>
+                        <Text style={styles.placeTitle}>{p.title}</Text>
+                        <Text style={styles.placeSubtitle}>{p.subtitle}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )
+              ) : null}
+            </View>
+          ) : null}
 
           <View style={styles.row}>
             <View style={{ flex: 1, marginRight: 10 }}>
               <Text style={styles.label}>Radius (m)</Text>
-              <TextInput
-                style={styles.input}
-                value={radiusM}
-                onChangeText={setRadiusM}
-                keyboardType="number-pad"
-              />
+              <TextInput style={styles.input} value={radiusM} onChangeText={setRadiusM} keyboardType="number-pad" />
             </View>
 
             <View style={{ flex: 1 }}>
               <Text style={styles.label}>Window ± (min)</Text>
-              <TextInput
-                style={styles.input}
-                value={windowMin}
-                onChangeText={setWindowMin}
-                keyboardType="number-pad"
-              />
+              <TextInput style={styles.input} value={windowMin} onChangeText={setWindowMin} keyboardType="number-pad" />
             </View>
           </View>
 
@@ -667,7 +1013,8 @@ export default function OrganizeIndexScreen() {
           </TouchableOpacity>
 
           <Text style={styles.helpSmall}>
-            You can type UTC ISO strings and lat/lng manually, or use the quick-fill buttons.
+            Required: title + venue address + coordinates. Times are stored as UTC ISO. Coordinates are used for geofence
+            check-in.
           </Text>
         </View>
       ) : (
@@ -726,10 +1073,7 @@ export default function OrganizeIndexScreen() {
             <Text style={styles.btnSmallText}>Open deep link (rta://)</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.btnSmall}
-            onPress={() => router.push("/organize/location-test")}
-          >
+          <TouchableOpacity style={styles.btnSmall} onPress={() => router.push("/organize/location-test")}>
             <Text style={styles.btnSmallText}>Location test</Text>
           </TouchableOpacity>
         </View>
@@ -771,17 +1115,10 @@ export default function OrganizeIndexScreen() {
         </View>
       </Modal>
 
-      <Modal
-        visible={startPickerOpen}
-        transparent
-        animationType="slide"
-        onRequestClose={closeStartPicker}
-      >
+      <Modal visible={startPickerOpen} transparent animationType="slide" onRequestClose={closeStartPicker}>
         <View style={styles.modalOverlay}>
           <View style={styles.pickerModalCard}>
-            <Text style={styles.modalTitle}>
-              {startPickerStep === "date" ? "Select start date" : "Select start time"}
-            </Text>
+            <Text style={styles.modalTitle}>{startPickerStep === "date" ? "Select start date" : "Select start time"}</Text>
             <Text style={styles.modalBody}>Preview: {tempStartPreview}</Text>
 
             <View style={{ height: 12 }} />
@@ -811,10 +1148,7 @@ export default function OrganizeIndexScreen() {
               </TouchableOpacity>
 
               {startPickerStep === "date" ? (
-                <TouchableOpacity
-                  style={styles.modalPrimaryBtn}
-                  onPress={() => setStartPickerStep("time")}
-                >
+                <TouchableOpacity style={styles.modalPrimaryBtn} onPress={() => setStartPickerStep("time")}>
                   <Text style={styles.modalPrimaryBtnText}>Next</Text>
                 </TouchableOpacity>
               ) : (
@@ -853,6 +1187,14 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 14,
     backgroundColor: "white",
+  },
+  subCard: {
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 14,
+    padding: 12,
+    marginTop: 10,
+    backgroundColor: "#FAFAFA",
   },
   cardTitle: { fontSize: 16, fontWeight: "700", marginBottom: 8 },
   label: { fontWeight: "600", marginBottom: 6 },
@@ -894,14 +1236,24 @@ const styles = StyleSheet.create({
   pickerPlaceholder: { color: "#6B7280" },
   advancedToggle: { alignSelf: "flex-start", marginBottom: 10, marginTop: -2 },
   advancedToggleText: { color: "#2563EB", fontWeight: "700" },
+  secondaryToggle: { alignSelf: "flex-start", marginTop: 6 },
+  secondaryToggleText: { color: "#374151", fontWeight: "700" },
   advancedBlock: { marginTop: 2 },
 
   row: {
     flexDirection: "row",
     alignItems: "center",
   },
+  rowBetween: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: -4,
+    marginBottom: 8,
+  },
   rowLabel: { flex: 1 },
   rowInput: { flex: 1, marginRight: 10 },
+  rowInputNoRight: { flex: 1, marginRight: 0 },
   btnSmall: {
     borderWidth: 1,
     borderColor: "#111827",
@@ -910,6 +1262,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     backgroundColor: "white",
   },
+  btnSmallDisabled: { opacity: 0.4 },
   btnSmallText: { fontWeight: "800", color: "#111827" },
   chip: {
     borderWidth: 1,
@@ -945,6 +1298,44 @@ const styles = StyleSheet.create({
   primaryBtnDisabled: { opacity: 0.6 },
   primaryBtnText: { color: "white", fontWeight: "900" },
   center: { alignItems: "center", justifyContent: "center" },
+
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 2,
+  },
+  searchInput: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  searchBtn: {
+    marginLeft: 10,
+    borderWidth: 1,
+    borderColor: "#111827",
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: "white",
+    marginBottom: 0,
+    minWidth: 92,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  searchBtnDisabled: { opacity: 0.6 },
+  searchBtnText: { fontWeight: "900", color: "#111827" },
+
+  placeRow: {
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 10,
+    backgroundColor: "white",
+  },
+  placeTitle: { fontWeight: "900", color: "#111827" },
+  placeSubtitle: { color: "#6B7280", marginTop: 4, fontSize: 12 },
+
+  advancedToggleInline: { paddingVertical: 2, paddingLeft: 8 },
 
   modalOverlay: {
     flex: 1,

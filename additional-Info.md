@@ -1283,3 +1283,13 @@ npx eas build -p android --profile internal
 必要なら履歴も見れる
 
 npx eas build:list --platform android --limit 10
+
+## 外での Expo 　 go に接続するとき
+
+ターミナルに Using development build / URL に expo-development-client が出てたら → s を押す
+
+家：npx expo start -c --lan --go
+
+外：npx expo start -c --tunnel --go
+
+あと、QR はできれば Expo Go アプリ内の Scan から読むのが安全（スマホのカメラだと Dev Client に吸われがち）。

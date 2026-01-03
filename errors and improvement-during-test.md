@@ -20,3 +20,4 @@
 -Checkin list を open detail→check in list ではなく　 open detail bottun と横並びにさせる
 -organize page の manage group をもう少し目立たせる
 -password の打ち込みに show pass word などの’項目を作り、自分が打っているパスワードが正しいかどうか見れるようにする
+-profile に写真を載せられるように → この写真を check in list にも反映できるようにする（現在 名前のみ ⇨ アップデート:小さめ顔写真 ➕ 名前。その欄を押すとその人のプロフィールが見えるように）

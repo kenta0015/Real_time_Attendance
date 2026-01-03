@@ -19,7 +19,7 @@ export default ({ config }) => {
     slug: "geoattendance",
     scheme: "rta",
     orientation: "portrait",
-    platforms: ["android", "ios"],
+    platforms: ["android", "ios", "web"],
     version: "1.0.0",
 
     runtimeVersion: { policy: "appVersion" },
